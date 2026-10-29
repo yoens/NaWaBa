@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NaWaBa 입력 실험장</title>
+
+    <style>
+        body {
+            max-width: 560px;
+            margin: 60px auto;
+            padding: 24px;
+            font-family: sans-serif;
+            background: #17212b;
+            color: #eef3f8;
+            line-height: 1.7;
+        }
+
+        button {
+            padding: 12px 20px;
+            margin-right: 8px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        #input {
+            padding: 16px;
+            background: #263646;
+            font-family: monospace;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>NaWaBa 입력 실험장</h1>
+    <p>조작 시작을 누른 뒤 WASD 또는 방향키를 사용하세요.</p>
+
+    <button id="start" disabled>조작 시작</button>
+    <button id="stop" disabled>조작 중지</button>
+
+    <p id="status">서버 연결 중...</p>
+    <p id="input">x=0, y=0</p>
+    <p>다른 창이나 탭으로 이동하면 조작이 해제됩니다.</p>
+
+    <script>
+        const startButton = document.getElementById("start");
+        const stopButton = document.getElementById("stop");
+        const statusText = document.getElementById("status");
+        const inputText = document.getElementById("input");
+
+        const socket = new WebSocket(
+            `ws://${location.host}/controller`
+        );
+
+        const keys = new Set();
+        const moveKeys = new Set([
+            "KeyW", "KeyA", "KeyS", "KeyD",
+            "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"
+        ]);
+
+        let active = false;
+        let sequence = 0;
+
+        function readMove() {
+            if (!active) return { x: 0, y: 0 };
+
+            const left = keys.has("KeyA") || keys.has("ArrowLeft");
+            const right = keys.has("KeyD") || keys.has("ArrowRight");
+            const back = keys.has("KeyS") || keys.has("ArrowDown");
+            const forward = keys.has("KeyW") || keys.has("ArrowUp");
+
+            return {
+                x: Number(right) - Number(left),
+                y: Number(forward) - Number(back)
+            };
+        }
+
+        function sendInput() {
+            const { x, y } = readMove();
+            inputText.textContent = `x=${x}, y=${y}`;
+
+            if (socket.readyState !== WebSocket.OPEN) return;
+
+            if (socket.bufferedAmount > 4096) {
+                active = false;
+                keys.clear();
+                inputText.textContent = "x=0, y=0";
+                statusText.textContent = "전송 지연: 연결을 종료합니다.";
+                socket.close();
+                return;
+            }
+
+            sequence++;
+
+            socket.send(JSON.stringify({
+                protocolVersion: 1,
+                type: "input",
+                sequence,
+                x,
+                y
+            }));
+
+            inputText.textContent =
+                `x=${x}, y=${y} / 전송 번호: ${sequence}`;
+        }
+
+        function stopControl(reason) {
+            active = false;
+            keys.clear();
+            sendInput();
+
+            if (socket.readyState === WebSocket.OPEN) {
+                statusText.textContent = reason;
+            }
+        }
+
+        socket.addEventListener("open", () => {
+            startButton.disabled = false;
+            stopButton.disabled = false;
+            statusText.textContent = "서버 연결됨 · 조작 시작을 누르세요.";
+        });
+
+        socket.addEventListener("close", () => {
+            active = false;
+            keys.clear();
+            startButton.disabled = true;
+            stopButton.disabled = true;
+            inputText.textContent = "x=0, y=0";
+            statusText.textContent = "연결 종료 · 서버 확인 후 새로고침하세요.";
+        });
+
+        socket.addEventListener("error", () => {
+            statusText.textContent = "연결 오류 · 서버 실행 상태를 확인하세요.";
+        });
+
+        startButton.addEventListener("click", () => {
+            if (socket.readyState !== WebSocket.OPEN) return;
+
+            keys.clear();
+            active = true;
+            statusText.textContent = "입력 전송 중 · WASD / 방향키";
+            sendInput();
+        });
+
+        stopButton.addEventListener("click", () => {
+            stopControl("조작 중지 · 다시 조작 시작을 누르세요.");
+        });
+
+        window.addEventListener("keydown", event => {
+            if (!active || !moveKeys.has(event.code)) return;
+
+            event.preventDefault();
+
+            if (event.repeat) return;
+
+            keys.add(event.code);
+            sendInput();
+        });
+
+        window.addEventListener("keyup", event => {
+            if (!active || !moveKeys.has(event.code)) return;
+
+            event.preventDefault();
+            keys.delete(event.code);
+            sendInput();
+        });
+
+        window.addEventListener("blur", () => {
+            stopControl("초점 없음 · 돌아오면 조작 시작을 다시 누르세요.");
+        });
+
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) {
+                stopControl("탭 비활성 · 조작 시작을 다시 누르세요.");
+            }
+        });
+
+        window.addEventListener("pagehide", () => {
+            stopControl("페이지 종료");
+            socket.close();
+        });
+
+        // 조작 활성 상태에서는 0.05초마다 현재 입력을 전송합니다.
+        setInterval(() => {
+            if (active) sendInput();
+        }, 50);
+    </script>
+</body>
+</html>
