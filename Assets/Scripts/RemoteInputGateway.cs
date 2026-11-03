@@ -9,262 +9,330 @@ using Stopwatch = System.Diagnostics.Stopwatch;
 
 public class RemoteInputGateway : MonoBehaviour
 {
-    [SerializeField] private string serverUrl =
-        "ws://127.0.0.1:3000/host";
-
+    // Keep these names: existing Inspector references are preserved when overwriting this file.
+    [SerializeField] private string serverUrl = "ws://127.0.0.1:3000/host";
     [SerializeField] private RemoteInputSource remoteInputSource;
     [SerializeField] private InputRouter inputRouter;
 
+    private const int ProtocolVersion = 2;
     private const int MaxPendingMessages = 32;
-    private const double MaxMessageAge = 0.5;
-
+    private const double InputTimeout = 0.5;
     private Session session;
+    private bool helloReceived;
+    private Message authority;
+    private bool controlling;
     private long lastSequence = -1;
-    private bool connectionReported;
+    private double lastInputAt;
 
-    public bool IsConnected => session != null && session.connected && !session.finished;
+    public bool IsConnected => session != null && session.connected &&
+        !session.finished && helloReceived;
+    public string PendingControllerId { get; private set; } = "";
+    public string PendingRequestId { get; private set; } = "";
+    public string PendingNickname { get; private set; } = "";
+    public bool HasPendingRequest => IsConnected && authority == null && PendingRequestId.Length > 0;
+    public bool HasAuthority => authority != null;
+    public string PlayerName => authority != null ? authority.nickname : PendingNickname;
+    public string ControlState => controlling ? "REMOTE" : authority != null ? "WAITING FOR WEB" : "LOCAL";
 
     [Serializable]
-    private class InputMessage
+    private class Message
     {
-        public int protocolVersion;
+        public int protocolVersion = ProtocolVersion;
         public string type;
+        public string controllerId;
+        public string requestId;
+        public string grantId;
+        public string nickname;
+        public string reason;
         public long sequence = -1;
-        public float x = float.NaN;
-        public float y = float.NaN;
+        public float x;
+        public float y;
     }
 
-    private class ReceivedPacket
+    private class Packet
     {
         public string json;
         public double receivedAt;
     }
 
-    // 연결마다 별도 상태를 사용합니다.
     private class Session
     {
-        public readonly CancellationTokenSource cancellation =
-            new CancellationTokenSource();
-
-        public readonly ConcurrentQueue<ReceivedPacket> messages =
-            new ConcurrentQueue<ReceivedPacket>();
-
+        public readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+        public readonly ConcurrentQueue<Packet> incoming = new ConcurrentQueue<Packet>();
+        public readonly ConcurrentQueue<string> outgoing = new ConcurrentQueue<string>();
+        public readonly SemaphoreSlim sendSignal = new SemaphoreSlim(0);
         public Task worker;
         public volatile bool connected;
         public volatile bool finished;
         public string error;
     }
 
-    private static double ClockNow()
+    private static double ClockNow() => (double)Stopwatch.GetTimestamp() / Stopwatch.Frequency;
+
+    private void ClearPendingRequest()
     {
-        return (double)Stopwatch.GetTimestamp() / Stopwatch.Frequency;
+        PendingControllerId = "";
+        PendingRequestId = "";
+        PendingNickname = "";
+    }
+
+    private void ClearAuthority()
+    {
+        authority = null;
+        controlling = false;
+        lastSequence = -1;
+        if (remoteInputSource != null) remoteInputSource.ClearInput();
+        if (inputRouter != null) inputRouter.UseLocalInput();
     }
 
     private void OnEnable()
     {
         if (remoteInputSource == null || inputRouter == null)
         {
-            Debug.LogError(
-                "Gateway에 RemoteInputSource와 InputRouter를 연결해주세요.",
-                this);
-
+            Debug.LogError("RemoteInputGateway: assign RemoteInputSource and InputRouter.", this);
             enabled = false;
             return;
         }
-
-        inputRouter.UseLocalInput();
-        lastSequence = -1;
-        connectionReported = false;
-
-        Session current = new Session();
+        helloReceived = false;
+        ClearPendingRequest();
+        ClearAuthority();
+        var current = new Session();
         session = current;
-
-        // 백그라운드 작업에서 MonoBehaviour의 필드를 읽지 않도록 복사합니다.
         string address = serverUrl;
-        CancellationToken token = current.cancellation.Token;
-
-        current.worker = Task.Run(
-            () => ReceiveLoopAsync(current, address, token));
+        current.worker = Task.Run(() => RunSessionAsync(current, address));
     }
 
-    // 이 메서드는 Unity 오브젝트를 직접 변경하지 않습니다.
-    private static async Task ReceiveLoopAsync(
-        Session current,
-        string address,
-        CancellationToken token)
+    private static async Task RunSessionAsync(Session current, string address)
     {
         try
         {
-            using (ClientWebSocket socket = new ClientWebSocket())
+            using (var socket = new ClientWebSocket())
+            using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
-                await socket.ConnectAsync(new Uri(address), token)
-                    .ConfigureAwait(false);
-
+                await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
                 current.connected = true;
-                byte[] buffer = new byte[1024];
-
-                while (!token.IsCancellationRequested &&
-                       socket.State == WebSocketState.Open)
+                Task receive = ReceiveAsync(socket, current, linked.Token);
+                Task send = SendAsync(socket, current, linked.Token);
+                await Task.WhenAny(receive, send).ConfigureAwait(false);
+                linked.Cancel();
+                socket.Abort();
+                try
                 {
-                    int length = 0;
-                    WebSocketReceiveResult result;
-
-                    // 하나의 메시지가 여러 조각으로 도착할 수 있습니다.
-                    do
-                    {
-                        if (length >= buffer.Length)
-                            throw new InvalidOperationException(
-                                "수신 메시지가 너무 큽니다.");
-
-                        result = await socket.ReceiveAsync(
-                            new ArraySegment<byte>(
-                                buffer, length, buffer.Length - length),
-                            token).ConfigureAwait(false);
-
-                        if (result.MessageType == WebSocketMessageType.Close)
-                            return;
-
-                        if (result.MessageType != WebSocketMessageType.Text)
-                            throw new InvalidOperationException(
-                                "텍스트 메시지만 받을 수 있습니다.");
-
-                        length += result.Count;
-                    }
-                    while (!result.EndOfMessage);
-
-                    if (current.messages.Count >= MaxPendingMessages)
-                        throw new InvalidOperationException(
-                            "입력 수신 대기열이 초과됐습니다.");
-
-                    current.messages.Enqueue(new ReceivedPacket
-                    {
-                        json = Encoding.UTF8.GetString(buffer, 0, length),
-                        receivedAt = ClockNow()
-                    });
+                    await Task.WhenAll(receive, send).ConfigureAwait(false);
                 }
+                catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
             }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        catch (OperationCanceledException) when (current.cancellation.IsCancellationRequested) { }
+        catch (Exception error)
         {
-            // Play 종료나 컴포넌트 비활성화에 따른 정상 취소입니다.
-        }
-        catch (Exception exception)
-        {
-            current.error = exception.Message;
+            current.error = error.Message;
         }
         finally
         {
+            current.connected = false;
             current.finished = true;
         }
     }
 
+    private static async Task ReceiveAsync(ClientWebSocket socket, Session current, CancellationToken token)
+    {
+        byte[] buffer = new byte[2048];
+        while (!token.IsCancellationRequested)
+        {
+            int length = 0;
+            WebSocketReceiveResult result;
+            do
+            {
+                if (length >= buffer.Length) throw new InvalidOperationException("Message too large.");
+                result = await socket.ReceiveAsync(
+                    new ArraySegment<byte>(buffer, length, buffer.Length - length), token).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close) return;
+                if (result.MessageType != WebSocketMessageType.Text)
+                    throw new InvalidOperationException("Text messages only.");
+                length += result.Count;
+            } while (!result.EndOfMessage);
+            if (current.incoming.Count >= MaxPendingMessages)
+                throw new InvalidOperationException("Incoming queue overflow.");
+            current.incoming.Enqueue(new Packet {
+                json = Encoding.UTF8.GetString(buffer, 0, length), receivedAt = ClockNow()
+            });
+        }
+    }
+
+    // Exactly one sender per ClientWebSocket; Unity's main thread only enqueues JSON.
+    private static async Task SendAsync(ClientWebSocket socket, Session current, CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            await current.sendSignal.WaitAsync(token).ConfigureAwait(false);
+            if (!current.outgoing.TryDequeue(out string json)) continue;
+            byte[] bytes = Encoding.UTF8.GetBytes(json);
+            await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text,
+                true, token).ConfigureAwait(false);
+        }
+    }
+
+    private bool Queue(Message message)
+    {
+        var current = session;
+        if (!IsConnected || current == null) return false;
+        if (current.outgoing.Count >= MaxPendingMessages)
+        {
+            Debug.LogError("Outgoing queue overflow; returning to local control.", this);
+            enabled = false;
+            return false;
+        }
+        current.outgoing.Enqueue(JsonUtility.ToJson(message));
+        current.sendSignal.Release();
+        return true;
+    }
+
+    public void ApprovePendingRequest()
+    {
+        if (!HasPendingRequest || !inputRouter.isActiveAndEnabled ||
+            !remoteInputSource.isActiveAndEnabled) return;
+        authority = new Message {
+            controllerId = PendingControllerId, requestId = PendingRequestId,
+            nickname = PendingNickname
+        };
+        var approval = new Message {
+            type = "approve_control", controllerId = authority.controllerId,
+            requestId = authority.requestId
+        };
+        ClearPendingRequest();
+        if (!Queue(approval)) ClearAuthority();
+    }
+
+    public void ReclaimControl()
+    {
+        Message previous = authority;
+        ClearAuthority(); // Immediate local recovery, even if the network is stalled.
+        if (previous != null)
+        {
+            Queue(new Message {
+                type = "revoke_control", controllerId = previous.controllerId,
+                requestId = previous.requestId, grantId = previous.grantId
+            });
+        }
+    }
+
+    private static bool SameRequest(Message a, Message b) => a != null && b != null &&
+        a.controllerId == b.controllerId && a.requestId == b.requestId;
+
+    private bool CurrentGrant(Message message) => SameRequest(message, authority) &&
+        !string.IsNullOrEmpty(authority.grantId) && message.grantId == authority.grantId;
+
     private void Update()
     {
-        Session current = session;
-
-        if (current == null)
-            return;
-
+        var current = session;
+        if (current == null) return;
         if (current.finished)
         {
-            string reason = current.error ?? "서버 연결이 종료됐습니다.";
-            Debug.LogWarning(reason + " 로컬 모드로 복귀합니다.", this);
+            Debug.LogWarning("NaWaBa disconnected. " + current.error + " Restart Play to reconnect.", this);
             enabled = false;
             return;
         }
-
-        if (current.connected && !connectionReported)
-        {
-            connectionReported = true;
-            Debug.Log("WebSocket 연결 완료: " + serverUrl, this);
-        }
-
-        InputMessage latestInput = null;
-        double latestReceivedAt = 0;
-
+        Message latest = null;
+        double receivedAt = 0;
         try
         {
-            for (int i = 0;
-                 i < MaxPendingMessages &&
-                 current.messages.TryDequeue(out ReceivedPacket packet);
-                 i++)
+            for (int i = 0; i < MaxPendingMessages && current.incoming.TryDequeue(out Packet packet); i++)
             {
-                if (ClockNow() - packet.receivedAt >= MaxMessageAge)
-                    throw new InvalidOperationException(
-                        "처리가 지연된 입력을 감지했습니다.");
-
-                InputMessage message =
-                    JsonUtility.FromJson<InputMessage>(packet.json);
-
-                if (message == null || message.protocolVersion != 1)
-                    throw new InvalidOperationException(
-                        "지원하지 않는 메시지입니다.");
-
-                if (message.type == "reset")
+                if (ClockNow() - packet.receivedAt >= InputTimeout)
+                    throw new InvalidOperationException("Stale network message.");
+                Message message = JsonUtility.FromJson<Message>(packet.json);
+                if (message == null || message.protocolVersion != ProtocolVersion)
+                    throw new InvalidOperationException("Protocol mismatch. Update all three parts.");
+                if (message.type == "host_hello")
                 {
+                    helloReceived = true;
+                    Debug.Log("NaWaBa server connected (protocol 2).", this);
+                    continue;
+                }
+                if (!helloReceived) throw new InvalidOperationException("Missing server hello.");
+                if (message.type == "control_request")
+                {
+                    if (string.IsNullOrEmpty(message.controllerId) || string.IsNullOrEmpty(message.requestId) ||
+                        string.IsNullOrWhiteSpace(message.nickname) || message.nickname.Length > 20)
+                        throw new InvalidOperationException("Invalid control request.");
+                    if (authority != null) continue;
+                    PendingControllerId = message.controllerId;
+                    PendingRequestId = message.requestId;
+                    PendingNickname = message.nickname;
+                    continue;
+                }
+                if (message.type == "request_rejected")
+                {
+                    if (message.requestId == PendingRequestId) ClearPendingRequest();
+                    if (SameRequest(message, authority)) ClearAuthority();
+                    continue;
+                }
+                if (message.type == "control_granted")
+                {
+                    if (!SameRequest(message, authority)) continue;
+                    if (string.IsNullOrEmpty(message.grantId))
+                        throw new InvalidOperationException("Missing grant ID.");
+                    authority.grantId = message.grantId;
+                    continue;
+                }
+                if (message.type == "control_started")
+                {
+                    if (!CurrentGrant(message) || controlling) continue;
+                    if (!inputRouter.isActiveAndEnabled || !remoteInputSource.isActiveAndEnabled)
+                    {
+                        ReclaimControl();
+                        continue;
+                    }
                     remoteInputSource.ClearInput();
                     lastSequence = -1;
-                    latestInput = null;
+                    lastInputAt = packet.receivedAt;
+                    controlling = true;
+                    inputRouter.UseRemoteInput();
                     continue;
                 }
-
-                if (message.type != "input" ||
-                    message.sequence < 0 ||
-                    float.IsNaN(message.x) || float.IsNaN(message.y) ||
-                    float.IsInfinity(message.x) ||
-                    float.IsInfinity(message.y) ||
-                    Mathf.Abs(message.x) > 1f ||
-                    Mathf.Abs(message.y) > 1f)
+                if (message.type == "control_revoked")
                 {
-                    throw new InvalidOperationException(
-                        "입력 메시지 형식이 올바르지 않습니다.");
-                }
-
-                if (message.sequence <= lastSequence)
+                    if (SameRequest(message, authority)) ClearAuthority();
                     continue;
-
+                }
+                if (message.type != "input") throw new InvalidOperationException("Unknown server message.");
+                if (!controlling || !CurrentGrant(message)) continue;
+                if (message.sequence < 0 || float.IsNaN(message.x) || float.IsNaN(message.y) ||
+                    float.IsInfinity(message.x) || float.IsInfinity(message.y) ||
+                    Mathf.Abs(message.x) > 1 || Mathf.Abs(message.y) > 1)
+                    throw new InvalidOperationException("Invalid input.");
+                if (message.sequence <= lastSequence) continue;
                 lastSequence = message.sequence;
-
-                // 여러 입력이 도착했다면 마지막 상태만 이동에 사용합니다.
-                latestInput = message;
-                latestReceivedAt = packet.receivedAt;
+                lastInputAt = packet.receivedAt;
+                latest = message;
+                receivedAt = packet.receivedAt;
             }
-
-            if (latestInput != null &&
-                inputRouter.isActiveAndEnabled &&
-                inputRouter.IsRemoteControl)
-            {
-                remoteInputSource.SetMoveInput(
-                    new Vector2(latestInput.x, latestInput.y),
-                    ClockNow() - latestReceivedAt);
-            }
+            if (controlling && (!inputRouter.isActiveAndEnabled || !inputRouter.IsRemoteControl ||
+                !remoteInputSource.isActiveAndEnabled || ClockNow() - lastInputAt >= InputTimeout))
+                ReclaimControl();
+            if (latest != null && controlling && CurrentGrant(latest))
+                remoteInputSource.SetMoveInput(new Vector2(latest.x, latest.y), ClockNow() - receivedAt);
         }
-        catch (Exception exception)
+        catch (Exception error)
         {
-            Debug.LogError("원격 입력 오류: " + exception.Message, this);
+            Debug.LogError("NaWaBa: " + error.Message, this);
             enabled = false;
         }
     }
 
     private void OnDisable()
     {
-        Session previous = session;
+        helloReceived = false;
+        ClearPendingRequest();
+        ClearAuthority();
+        var previous = session;
         session = null;
-
-        if (remoteInputSource != null)
-            remoteInputSource.ClearInput();
-
-        if (inputRouter != null)
-            inputRouter.UseLocalInput();
-
-        if (previous == null)
-            return;
-
+        if (previous == null) return;
         previous.cancellation.Cancel();
-
-        // 수신 작업이 끝난 뒤 취소 자원을 정리합니다.
-        _ = previous.worker.ContinueWith(
-            _ => previous.cancellation.Dispose(),
-            TaskScheduler.Default);
+        _ = previous.worker.ContinueWith(_ => {
+            previous.sendSignal.Dispose();
+            previous.cancellation.Dispose();
+        }, TaskScheduler.Default);
     }
 }

@@ -12,40 +12,30 @@ public class ConnectionHUD : MonoBehaviour
 
     private void Awake()
     {
-        if (gateway == null || inputRouter == null ||
-            statusText == null || remoteButton == null ||
-            reclaimButton == null)
+        if (gateway == null || inputRouter == null || statusText == null ||
+            remoteButton == null || reclaimButton == null)
         {
-            Debug.LogError("ConnectionHUD의 Inspector 연결을 확인해주세요.", this);
+            Debug.LogError("ConnectionHUD: check the five Inspector references.", this);
             enabled = false;
+            return;
         }
+        statusText.richText = false;
+        TMP_Text label = remoteButton.GetComponentInChildren<TMP_Text>();
+        if (label != null) label.text = "Approve";
+        label = reclaimButton.GetComponentInChildren<TMP_Text>();
+        if (label != null) label.text = "Take Back";
     }
 
     private void Update()
     {
-        bool connected = gateway.IsConnected;
-        bool remote = inputRouter.IsRemoteControl;
-
-        statusText.text =
-            $"Server: {(connected ? "CONNECTED" : "DISCONNECTED")}\n" +
-            $"Mode: {(remote ? "REMOTE" : "LOCAL")}";
-
-        remoteButton.interactable =
-            connected && inputRouter.isActiveAndEnabled && !remote;
-
-        reclaimButton.interactable = remote;
+        string player = string.IsNullOrEmpty(gateway.PlayerName) ? "-" : gateway.PlayerName;
+        statusText.text = $"Server: {(gateway.IsConnected ? "CONNECTED" : "DISCONNECTED")}\n" +
+            $"Mode: {gateway.ControlState}\nPlayer: {player}";
+        remoteButton.interactable = gateway.HasPendingRequest && inputRouter.isActiveAndEnabled;
+        reclaimButton.interactable = gateway.HasAuthority;
     }
 
-    public void EnableRemoteMode()
-    {
-        if (!gateway.IsConnected || !inputRouter.isActiveAndEnabled)
-            return;
-
-        inputRouter.UseRemoteInput();
-    }
-
-    public void ReclaimControl()
-    {
-        inputRouter.UseLocalInput();
-    }
+    // Keep existing button OnClick method names; the Inspector wiring need not change.
+    public void EnableRemoteMode() => gateway.ApprovePendingRequest();
+    public void ReclaimControl() => gateway.ReclaimControl();
 }
