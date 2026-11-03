@@ -22,6 +22,8 @@ public class RemoteInputGateway : MonoBehaviour
     private long lastSequence = -1;
     private bool connectionReported;
 
+    public bool IsConnected => session != null && session.connected && !session.finished;
+
     [Serializable]
     private class InputMessage
     {
