@@ -22,7 +22,7 @@
 </head>
 <body>
     <h1>NaWaBa 입력 실험장</h1>
-    <p>신청하고 호스트의 승인을 받은 뒤, 조작 시작을 누르세요.</p>
+    <p>신청하고 호스트의 승인을 받은 뒤, 조작 시작을 누르세요. 3초 카운트다운 후 조작할 수 있습니다.</p>
     <label for="nickname">닉네임 (1~20자)</label>
     <input id="nickname" maxlength="20" autocomplete="off" placeholder="예: Yeonsu">
     <button id="request" disabled>조작 신청</button>
@@ -34,6 +34,7 @@
     <p class="hint">WASD 또는 방향키로 조작합니다. 조작 중 다른 창·탭으로 이동하면 권한을 반환합니다.
         다시 조작하려면 새로 신청하세요. 승인 후 15초 안에 시작하세요.</p>
     <script>
+    (() => {
         "use strict";
         const nicknameInput = document.getElementById("nickname");
         const requestButton = document.getElementById("request");
@@ -42,7 +43,16 @@
         const stopButton = document.getElementById("stop");
         const statusText = document.getElementById("status");
         const inputText = document.getElementById("input");
+        const joinKey = new URLSearchParams(location.hash.slice(1)).get("join");
+        if (!joinKey || !/^[a-f0-9]{64}$/.test(joinKey)) {
+            requestStatus.textContent = "참가 링크가 필요합니다.";
+            statusText.textContent = "호스트가 전달한 전체 참가 링크로 접속하세요.";
+            return;
+        }
         const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/controller`);
+        socket.addEventListener("open", () => {
+            socket.send(JSON.stringify({ protocolVersion: 2, type: "join", joinKey }));
+        });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
         let connected = false;
@@ -52,6 +62,7 @@
         let grantId = "";
         let phase = "idle"; // idle -> requesting -> pending -> approved -> starting -> active
         let sequence = 0;
+        let countdownEndsAt = 0;
         const reasons = {
             host_reclaimed: "호스트가 조작 권한을 회수했습니다.",
             controller_stopped: "조작을 중지했습니다.",
@@ -77,6 +88,7 @@
             grantId = "";
             keys.clear();
             sequence = 0;
+            countdownEndsAt = 0;
             inputText.textContent = "x=0, y=0";
             renderButtons();
         }
@@ -93,6 +105,12 @@
             return true;
         }
         function identity() { return { controllerId, requestId, grantId }; }
+        function renderCountdown() {
+            if (phase !== "starting" || !countdownEndsAt) return;
+            const remaining = Math.ceil((countdownEndsAt - performance.now()) / 1000);
+            const text = remaining > 0 ? `${remaining} · 잠시 후 조작을 시작합니다.` : "시작 확인 중…";
+            if (statusText.textContent !== text) statusText.textContent = text;
+        }
         function sameRequest(message) {
             return message.controllerId === controllerId && !!requestId && message.requestId === requestId;
         }
@@ -168,8 +186,16 @@
                 renderButtons();
                 return;
             }
+            if (message.type === "countdown_started" && phase === "starting" &&
+                sameRequest(message) && message.grantId === grantId) {
+                if (!Number.isFinite(message.countdownMs) || message.countdownMs < 0 || message.countdownMs > 10000) return;
+                countdownEndsAt = performance.now() + message.countdownMs;
+                renderCountdown();
+                return;
+            }
             if (message.type === "control_started" && phase === "starting" &&
                 sameRequest(message) && message.grantId === grantId) {
+                countdownEndsAt = 0;
                 phase = "active";
                 statusText.textContent = "조작 중 · WASD / 방향키";
                 renderButtons();
@@ -182,12 +208,18 @@
                 requestStatus.textContent = "다시 조작하려면 새로 신청하세요.";
             }
         });
-        socket.addEventListener("close", () => {
+        socket.addEventListener("close", event => {
             connected = false;
             hostOnline = false;
             clearControl();
             requestStatus.textContent = "서버 연결 종료";
-            statusText.textContent = "서버와 다른 조작 탭을 확인한 뒤 새로고침하세요.";
+            if (event.reason === "Invalid participant link") {
+                statusText.textContent = "참가 링크가 유효하지 않습니다. 호스트에게 새 링크를 받아 주세요.";
+            } else if (event.reason === "Controller already connected") {
+                statusText.textContent = "다른 참가자 또는 조작 탭이 이미 연결되어 있습니다.";
+            } else {
+                statusText.textContent = "서버와 참가 링크를 확인하세요. 서버를 재시작했다면 새 링크가 필요합니다.";
+            }
         });
         socket.addEventListener("error", () => {
             statusText.textContent = "연결 오류 · 서버 실행 상태를 확인하세요.";
@@ -214,14 +246,14 @@
         });
         stopButton.addEventListener("click", () => stopControl("조작 중지 · 권한을 반환했습니다."));
         window.addEventListener("keydown", event => {
-            if (phase !== "active" || !moveKeys.has(event.code)) return;
+            if (!["starting", "active"].includes(phase) || !moveKeys.has(event.code)) return;
             event.preventDefault();
             if (event.repeat) return;
             keys.add(event.code);
             sendInput();
         });
         window.addEventListener("keyup", event => {
-            if (phase !== "active" || !moveKeys.has(event.code)) return;
+            if (!["starting", "active"].includes(phase) || !moveKeys.has(event.code)) return;
             event.preventDefault();
             keys.delete(event.code);
             sendInput();
@@ -237,7 +269,11 @@
             if (grantId) stopControl("페이지 종료");
             socket.close();
         });
-        setInterval(() => { if (phase === "active") sendInput(); }, 50);
+        setInterval(() => {
+            if (phase === "active") sendInput();
+            else renderCountdown();
+        }, 50);
+    })();
     </script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -33,6 +34,40 @@ public class RemoteInputGateway : MonoBehaviour
     public bool HasAuthority => authority != null;
     public string PlayerName => authority != null ? authority.nickname : PendingNickname;
     public string ControlState => controlling ? "REMOTE" : authority != null ? "WAITING FOR WEB" : "LOCAL";
+
+    [Serializable]
+    private class HostConfig
+    {
+        public int schemaVersion;
+        public string serverUrl;
+        public string hostKey;
+    }
+
+    private bool TryReadHostConfig(out HostConfig config)
+    {
+        config = null;
+        // Editor: project root. Windows player: folder containing the .exe.
+        string configPath = Path.Combine(Path.GetDirectoryName(Application.dataPath), "nawaba-host.local.json");
+        try
+        {
+            config = JsonUtility.FromJson<HostConfig>(File.ReadAllText(configPath));
+            if (config == null || config.schemaVersion != 1 || string.IsNullOrEmpty(config.hostKey) ||
+                config.hostKey.Length != 64) throw new InvalidOperationException();
+            foreach (char c in config.hostKey)
+                if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f')) throw new InvalidOperationException();
+            if (!Uri.TryCreate(config.serverUrl, UriKind.Absolute, out Uri address) ||
+                (address.Scheme != "ws" && address.Scheme != "wss") || address.AbsolutePath != "/host" ||
+                !string.IsNullOrEmpty(address.UserInfo) || !string.IsNullOrEmpty(address.Query) ||
+                !string.IsNullOrEmpty(address.Fragment)) throw new InvalidOperationException();
+            return true;
+        }
+        catch
+        {
+            Debug.LogError("NaWaBa: missing or invalid host configuration. Run WebController/setup-local.cjs. " +
+                "For a Windows build, copy nawaba-host.local.json beside the .exe. Expected file: " + configPath, this);
+            return false;
+        }
+    }
 
     [Serializable]
     private class Message
@@ -96,19 +131,27 @@ public class RemoteInputGateway : MonoBehaviour
         helloReceived = false;
         ClearPendingRequest();
         ClearAuthority();
+        if (!TryReadHostConfig(out HostConfig config))
+        {
+            enabled = false;
+            return;
+        }
         var current = new Session();
         session = current;
-        string address = serverUrl;
-        current.worker = Task.Run(() => RunSessionAsync(current, address));
+        serverUrl = config.serverUrl;
+        string address = config.serverUrl;
+        string hostKey = config.hostKey;
+        current.worker = Task.Run(() => RunSessionAsync(current, address, hostKey));
     }
 
-    private static async Task RunSessionAsync(Session current, string address)
+    private static async Task RunSessionAsync(Session current, string address, string hostKey)
     {
         try
         {
             using (var socket = new ClientWebSocket())
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
+                socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
                 current.connected = true;
                 Task receive = ReceiveAsync(socket, current, linked.Token);
@@ -126,7 +169,7 @@ public class RemoteInputGateway : MonoBehaviour
         catch (OperationCanceledException) when (current.cancellation.IsCancellationRequested) { }
         catch (Exception error)
         {
-            current.error = error.Message;
+            if (string.IsNullOrEmpty(current.error)) current.error = error.Message;
         }
         finally
         {
@@ -147,7 +190,11 @@ public class RemoteInputGateway : MonoBehaviour
                 if (length >= buffer.Length) throw new InvalidOperationException("Message too large.");
                 result = await socket.ReceiveAsync(
                     new ArraySegment<byte>(buffer, length, buffer.Length - length), token).ConfigureAwait(false);
-                if (result.MessageType == WebSocketMessageType.Close) return;
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    current.error = result.CloseStatusDescription;
+                    return;
+                }
                 if (result.MessageType != WebSocketMessageType.Text)
                     throw new InvalidOperationException("Text messages only.");
                 length += result.Count;

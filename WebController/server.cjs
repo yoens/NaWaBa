@@ -3,14 +3,23 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 
 // Protocol 2: server.cjs, index.html, RemoteInputGateway.cs must be updated together.
 function createApplication(options = {}) {
+    const { hostKey, joinKey } = options;
+    const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
+    if (!validKey(hostKey) || !validKey(joinKey) || hostKey === joinKey) {
+        throw new Error("Two distinct 32-byte keys are required.");
+    }
+    const matchesKey = (value, expected) => validKey(value) &&
+        timingSafeEqual(Buffer.from(value, "hex"), Buffer.from(expected, "hex"));
     const { WebSocket, WebSocketServer } = options.socketLibrary || require("ws");
+    const authTimeout = options.authTimeout ?? 3000;
     const inputTimeout = options.inputTimeout || 500;
     const readyTimeout = options.readyTimeout || 15000;
     const requestTimeout = options.requestTimeout || 30000;
+    const startDelay = options.startDelay ?? 3000;
     const log = options.log || console.log;
     let host = null;
     let controller = null;
@@ -104,6 +113,10 @@ function createApplication(options = {}) {
         }
 
         if (request.url === "/host") {
+            if (!matchesKey(request.headers["x-nawaba-host-key"], hostKey)) {
+                socket.close(1008, "Host authentication failed");
+                return;
+            }
             if (host) {
                 socket.close(1008, "Host already connected");
                 return;
@@ -123,7 +136,7 @@ function createApplication(options = {}) {
                     pending = null;
                     grant = {
                         ...approved, grantId: randomUUID(), active: false,
-                        approvedAt: performance.now(), lastInputAt: 0, lastSequence: -1
+                        approvedAt: performance.now(), startAt: null, lastInputAt: 0, lastSequence: -1
                     };
                     const notification = { type: "control_granted", ...ids(grant) };
                     if (!send(host, notification) || !send(controller, notification)) {
@@ -156,90 +169,111 @@ function createApplication(options = {}) {
             socket.close(1008, "Invalid controller connection");
             return;
         }
-        if (controller) {
-            socket.close(1008, "Controller already connected");
-            return;
-        }
-        controller = socket;
-        const controllerId = randomUUID();
-        send(socket, { type: "controller_hello", controllerId,
-            hostOnline: !!host && host.readyState === WebSocket.OPEN });
-        log("[controller] connected");
+        // Authentication does not reserve the single participant slot.
+        const authTimer = setTimeout(() => socket.close(1008, "Authentication timeout"), authTimeout);
+        authTimer.unref();
+        socket.once("close", () => clearTimeout(authTimer));
+        socket.once("message", (data, binary) => {
+            clearTimeout(authTimer);
+            if (socket.readyState !== WebSocket.OPEN) return;
+            const authentication = parse(socket, data, binary);
+            if (!authentication) return;
+            if (authentication.type !== "join" || !matchesKey(authentication.joinKey, joinKey)) {
+                socket.close(1008, "Invalid participant link");
+                return;
+            }
+            if (controller) {
+                socket.close(1008, "Controller already connected");
+                return;
+            }
+            controller = socket;
+            const controllerId = randomUUID();
+            send(socket, { type: "controller_hello", controllerId,
+                hostOnline: !!host && host.readyState === WebSocket.OPEN });
+            log("[controller] connected");
 
-        socket.on("message", (data, binary) => {
-            if (controller !== socket) return;
-            const message = parse(socket, data, binary);
-            if (!message) return;
-            if (message.type === "request_control") {
-                if (pending || grant) return;
-                const nickname = typeof message.nickname === "string"
-                    ? message.nickname.trim() : "";
-                if (!nickname || nickname.length > 20 || !host ||
-                    host.readyState !== WebSocket.OPEN) {
-                    send(socket, { type: "request_rejected", reason:
-                        !nickname || nickname.length > 20 ? "invalid_nickname" : "host_disconnected" });
+            socket.on("message", (data, binary) => {
+                if (controller !== socket) return;
+                const message = parse(socket, data, binary);
+                if (!message) return;
+                if (message.type === "request_control") {
+                    if (pending || grant) return;
+                    const nickname = typeof message.nickname === "string"
+                        ? message.nickname.trim() : "";
+                    if (!nickname || nickname.length > 20 || !host ||
+                        host.readyState !== WebSocket.OPEN) {
+                        send(socket, { type: "request_rejected", reason:
+                            !nickname || nickname.length > 20 ? "invalid_nickname" : "host_disconnected" });
+                        return;
+                    }
+                    pending = { controllerId, requestId: randomUUID(), nickname,
+                        requestedAt: performance.now() };
+                    if (!send(host, { type: "control_request", ...ids(pending) })) {
+                        cancelPending("host_disconnected");
+                        return;
+                    }
+                    send(socket, { type: "request_received", ...ids(pending) });
+                    log(`[request] ${nickname}`);
                     return;
                 }
-                pending = { controllerId, requestId: randomUUID(), nickname,
-                    requestedAt: performance.now() };
-                if (!send(host, { type: "control_request", ...ids(pending) })) {
-                    cancelPending("host_disconnected");
+                if (message.type === "ready") {
+                    if (!matchesGrant(message) || grant.active || grant.startAt !== null) return;
+                    // Only the server decides when the countdown ends. Duplicate ready is ignored.
+                    grant.startAt = performance.now() + startDelay;
+                    if (!send(socket, { type: "countdown_started", ...ids(grant), countdownMs: startDelay })) {
+                        revoke("connection_lost");
+                    }
                     return;
                 }
-                send(socket, { type: "request_received", ...ids(pending) });
-                log(`[request] ${nickname}`);
-                return;
-            }
-            if (message.type === "ready") {
-                if (!matchesGrant(message) || grant.active) return;
-                grant.active = true;
+                if (message.type === "release_control") {
+                    if (matches(message, pending)) cancelPending("controller_stopped");
+                    if (matchesGrant(message)) revoke("controller_stopped");
+                    return;
+                }
+                if (message.type !== "input") {
+                    socket.close(1008, "Invalid controller message");
+                    return;
+                }
+                // Only the actual connected participant's currently active grant can move Unity.
+                if (!matchesGrant(message) || !grant.active ||
+                    grant.controllerId !== controllerId) return;
+                if (!Number.isSafeInteger(message.sequence) || message.sequence < 0 ||
+                    !Number.isFinite(message.x) || !Number.isFinite(message.y) ||
+                    Math.abs(message.x) > 1 || Math.abs(message.y) > 1) {
+                    revoke("invalid_input");
+                    socket.close(1008, "Invalid input");
+                    return;
+                }
+                if (message.sequence <= grant.lastSequence) return;
+                grant.lastSequence = message.sequence;
                 grant.lastInputAt = performance.now();
-                const notification = { type: "control_started", ...ids(grant) };
-                if (!send(host, notification) || !send(socket, notification)) {
-                    revoke("connection_lost");
+                if (!send(host, { type: "input", ...ids(grant),
+                    sequence: message.sequence, x: message.x, y: message.y })) {
+                    revoke("host_disconnected");
                 }
-                return;
-            }
-            if (message.type === "release_control") {
-                if (matches(message, pending)) cancelPending("controller_stopped");
-                if (matchesGrant(message)) revoke("controller_stopped");
-                return;
-            }
-            if (message.type !== "input") {
-                socket.close(1008, "Invalid controller message");
-                return;
-            }
-            // Only the actual connected participant's currently active grant can move Unity.
-            if (!matchesGrant(message) || !grant.active ||
-                grant.controllerId !== controllerId) return;
-            if (!Number.isSafeInteger(message.sequence) || message.sequence < 0 ||
-                !Number.isFinite(message.x) || !Number.isFinite(message.y) ||
-                Math.abs(message.x) > 1 || Math.abs(message.y) > 1) {
-                revoke("invalid_input");
-                socket.close(1008, "Invalid input");
-                return;
-            }
-            if (message.sequence <= grant.lastSequence) return;
-            grant.lastSequence = message.sequence;
-            grant.lastInputAt = performance.now();
-            if (!send(host, { type: "input", ...ids(grant),
-                sequence: message.sequence, x: message.x, y: message.y })) {
-                revoke("host_disconnected");
-            }
-        });
-        socket.on("close", () => {
-            if (controller !== socket) return;
-            controller = null;
-            cancelPending("controller_disconnected");
-            revoke("controller_disconnected");
-            log("[controller] disconnected");
-        });
+            });
+            socket.on("close", () => {
+                if (controller !== socket) return;
+                controller = null;
+                cancelPending("controller_disconnected");
+                revoke("controller_disconnected");
+                log("[controller] disconnected");
+            });
+        }); // authenticated participant
     });
 
     const timer = setInterval(() => {
         const now = performance.now();
         if (pending && now - pending.requestedAt >= requestTimeout) cancelPending("request_timeout");
-        if (grant && !grant.active && now - grant.approvedAt >= readyTimeout) revoke("ready_timeout");
+        if (grant && !grant.active && grant.startAt === null &&
+            now - grant.approvedAt >= readyTimeout) revoke("ready_timeout");
+        // No detached callback: revoking the current grant also cancels its countdown.
+        if (grant && !grant.active && grant.startAt !== null && now >= grant.startAt) {
+            grant.active = true;
+            grant.lastInputAt = now;
+            const notification = { type: "control_started", ...ids(grant) };
+            if (!send(host, notification) || !send(controller, notification)) revoke("connection_lost");
+        }
         if (grant && grant.active && now - grant.lastInputAt >= inputTimeout) revoke("input_timeout");
     }, 50);
     timer.unref();
@@ -249,8 +283,19 @@ function createApplication(options = {}) {
 }
 
 if (require.main === module) {
-    const app = createApplication();
-    // Local development only. Keep this binding until the public-link stage.
-    app.server.listen(3000, "127.0.0.1", () => console.log(`Open ${app.origin()}`));
+    try {
+        const config = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "nawaba-host.local.json"), "utf8"));
+        const joinKey = randomBytes(32).toString("hex");
+        const app = createApplication({ hostKey: config.hostKey, joinKey });
+        // This step stays local. HTTPS/WSS deployment comes after authentication verification.
+        app.server.listen(3000, "127.0.0.1", () => {
+            console.log("[host] credential loaded from nawaba-host.local.json");
+            console.log(`Invite URL: ${app.origin()}/#join=${joinKey}`);
+            console.log("The invite changes on each server restart. Host approval is still required.");
+        });
+    } catch {
+        console.error("Cannot start. Run node setup-local.cjs and check that the ws package is installed.");
+        process.exitCode = 1;
+    }
 }
 module.exports = { createApplication };
