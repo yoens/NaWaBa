@@ -4,6 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
+const { readServerConfig } = require("./server-config.cjs");
 
 // Protocol 2: server.cjs, index.html, RemoteInputGateway.cs must be updated together.
 function createApplication(options = {}) {
@@ -21,12 +22,18 @@ function createApplication(options = {}) {
     const requestTimeout = options.requestTimeout || 30000;
     const startDelay = options.startDelay ?? 3000;
     const log = options.log || console.log;
+    const heartbeatMs = options.heartbeatMs ?? 20000;
     let host = null;
     let controller = null;
     let pending = null;
     let grant = null;
 
     const server = http.createServer((request, response) => {
+        if (request.url === "/healthz") {
+            response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+            response.end('{"ok":true}');
+            return;
+        }
         if (request.url !== "/" && request.url !== "/index.html") {
             response.writeHead(404);
             response.end("Not Found");
@@ -35,13 +42,16 @@ function createApplication(options = {}) {
         fs.readFile(path.join(__dirname, "index.html"), (error, data) => {
             response.writeHead(error ? 500 : 200, {
                 "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "no-store"
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff"
             });
             response.end(error ? "Cannot read index.html" : data);
         });
     });
     const wss = new WebSocketServer({ server, maxPayload: 2048 });
-    const origin = () => `http://127.0.0.1:${server.address().port}`;
+    // Do not derive this from incoming Host or X-Forwarded-* headers.
+    const origin = () => options.publicOrigin || `http://127.0.0.1:${server.address().port}`;
 
     function send(socket, message) {
         if (!socket || socket.readyState !== WebSocket.OPEN) return false;
@@ -90,6 +100,7 @@ function createApplication(options = {}) {
         return matches(message, grant) && message.grantId === grant.grantId;
     }
     function parse(socket, data, isBinary) {
+        if (socket.readyState !== WebSocket.OPEN) return null;
         try {
             if (isBinary) throw new Error();
             const message = JSON.parse(data.toString());
@@ -106,6 +117,22 @@ function createApplication(options = {}) {
 
     wss.on("connection", (socket, request) => {
         socket.on("error", error => log(`[socket] ${error.message}`));
+        if (wss.clients.size > 16) {
+            socket.close(1013, "Server connection limit");
+            return;
+        }
+        socket.alive = true;
+        socket.on("pong", () => { socket.alive = true; });
+        let messageWindowAt = performance.now();
+        let messagesInWindow = 0;
+        socket.on("message", () => {
+            const now = performance.now();
+            if (now - messageWindowAt >= 1000) {
+                messageWindowAt = now;
+                messagesInWindow = 0;
+            }
+            if (++messagesInWindow > 120) socket.close(1008, "Message rate limit");
+        });
         const requestOrigin = request.headers.origin;
         if (requestOrigin && requestOrigin !== origin()) {
             socket.close(1008, "Invalid origin");
@@ -277,24 +304,32 @@ function createApplication(options = {}) {
         if (grant && grant.active && now - grant.lastInputAt >= inputTimeout) revoke("input_timeout");
     }, 50);
     timer.unref();
-    server.on("close", () => clearInterval(timer));
+    const heartbeat = setInterval(() => {
+        for (const socket of wss.clients) {
+            if (socket.readyState !== WebSocket.OPEN) continue;
+            if (!socket.alive) { socket.terminate(); continue; }
+            socket.alive = false;
+            socket.ping();
+        }
+    }, heartbeatMs);
+    heartbeat.unref();
+    server.on("close", () => { clearInterval(timer); clearInterval(heartbeat); });
     server.on("error", error => log(`Server error: ${error.message}`));
     return { server, wss, origin };
 }
 
 if (require.main === module) {
     try {
-        const config = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "nawaba-host.local.json"), "utf8"));
+        const config = readServerConfig();
         const joinKey = randomBytes(32).toString("hex");
-        const app = createApplication({ hostKey: config.hostKey, joinKey });
-        // This step stays local. HTTPS/WSS deployment comes after authentication verification.
-        app.server.listen(3000, "127.0.0.1", () => {
-            console.log("[host] credential loaded from nawaba-host.local.json");
+        const app = createApplication({ hostKey: config.hostKey, joinKey, publicOrigin: config.publicOrigin });
+        app.server.listen(config.port, config.listenHost, () => {
+            console.log(`[server] listening on ${config.listenHost}:${config.port}`);
             console.log(`Invite URL: ${app.origin()}/#join=${joinKey}`);
             console.log("The invite changes on each server restart. Host approval is still required.");
         });
-    } catch {
-        console.error("Cannot start. Run node setup-local.cjs and check that the ws package is installed.");
+    } catch (error) {
+        console.error("Cannot start:", error.message);
         process.exitCode = 1;
     }
 }
