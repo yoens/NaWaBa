@@ -149,7 +149,8 @@ function createApplication(options = {}) {
                 return;
             }
             host = socket;
-            send(host, { type: "host_hello" });
+            // Send the participant link only after host authentication succeeds.
+            send(host, { type: "host_hello", inviteUrl: `${origin()}/#join=${joinKey}` });
             send(controller, { type: "host_status", hostOnline: true });
             log("[host] connected");
             socket.on("message", (data, binary) => {
