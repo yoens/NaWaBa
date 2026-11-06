@@ -10,6 +10,9 @@ public class ConnectionHUD : MonoBehaviour
     [SerializeField] private Button remoteButton;
     [SerializeField] private Button reclaimButton;
 
+    private bool IsSinglePlayer => gateway.UsesGameSessionMode &&
+        GameSession.Mode == GameMode.SinglePlayer;
+
     private void Awake()
     {
         if (gateway == null || inputRouter == null || statusText == null ||
@@ -20,6 +23,8 @@ public class ConnectionHUD : MonoBehaviour
             return;
         }
         statusText.richText = false;
+        remoteButton.gameObject.SetActive(!IsSinglePlayer);
+        reclaimButton.gameObject.SetActive(!IsSinglePlayer);
         TMP_Text label = remoteButton.GetComponentInChildren<TMP_Text>();
         if (label != null) label.text = "Approve";
         label = reclaimButton.GetComponentInChildren<TMP_Text>();
@@ -28,14 +33,22 @@ public class ConnectionHUD : MonoBehaviour
 
     private void Update()
     {
+        if (IsSinglePlayer)
+        {
+            CharacterDefinition character = GameSession.SelectedCharacter;
+            string name = character != null ? character.DisplayName : "-";
+            statusText.text = $"Mode: SINGLE PLAYER\nConnection: OFFLINE\nCharacter: {name}";
+            return;
+        }
+
         string player = string.IsNullOrEmpty(gateway.PlayerName) ? "-" : gateway.PlayerName;
         statusText.text = $"Server: {(gateway.IsConnected ? "CONNECTED" : "DISCONNECTED")}\n" +
             $"Mode: {gateway.ControlState}\nPlayer: {player}";
-        remoteButton.interactable = gateway.HasPendingRequest && inputRouter.isActiveAndEnabled;
+        remoteButton.interactable = gateway.CanApprovePendingRequest;
         reclaimButton.interactable = gateway.HasAuthority;
     }
 
-    // Keep existing button OnClick method names; the Inspector wiring need not change.
+    // Preserve the existing button OnClick names and Inspector connections.
     public void EnableRemoteMode() => gateway.ApprovePendingRequest();
     public void ReclaimControl() => gateway.ReclaimControl();
 }

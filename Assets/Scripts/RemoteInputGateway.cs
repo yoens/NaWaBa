@@ -15,6 +15,9 @@ public class RemoteInputGateway : MonoBehaviour
     [SerializeField] private RemoteInputSource remoteInputSource;
     [SerializeField] private InputRouter inputRouter;
 
+    [SerializeField] private bool useGameSessionMode;
+    public bool UsesGameSessionMode => useGameSessionMode;
+
     private const int ProtocolVersion = 2;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
@@ -32,6 +35,19 @@ public class RemoteInputGateway : MonoBehaviour
     public string PendingNickname { get; private set; } = "";
     public bool HasPendingRequest => IsConnected && authority == null && PendingRequestId.Length > 0;
     public bool HasAuthority => authority != null;
+    public bool IsControlling => controlling;
+
+    // A stage can temporarily disallow approvals without disconnecting the host.
+    // Defaults to true so InputLab keeps its existing behavior.
+    public bool AllowRemoteApproval { get; set; } = true;
+    public bool CanApprovePendingRequest => AllowRemoteApproval && HasPendingRequest &&
+        inputRouter != null && inputRouter.isActiveAndEnabled &&
+        remoteInputSource != null && remoteInputSource.isActiveAndEnabled;
+
+    // Raised only on Unity's main thread, after the corresponding state changes.
+    public event Action RemoteControlPreparing;
+    public event Action RemoteControlStarted;
+    public event Action RemoteControlEnded;
     public string PlayerName => authority != null ? authority.nickname : PendingNickname;
     public string ControlState => controlling ? "REMOTE" : authority != null ? "WAITING FOR WEB" : "LOCAL";
 
@@ -113,15 +129,24 @@ public class RemoteInputGateway : MonoBehaviour
 
     private void ClearAuthority()
     {
+        bool hadAuthority = authority != null;
         authority = null;
         controlling = false;
         lastSequence = -1;
         if (remoteInputSource != null) remoteInputSource.ClearInput();
         if (inputRouter != null) inputRouter.UseLocalInput();
+        if (hadAuthority) RemoteControlEnded?.Invoke();
     }
 
     private void OnEnable()
     {
+        // Before reading credentials or starting a network worker.
+        if (useGameSessionMode && GameSession.Mode == GameMode.SinglePlayer)
+        {
+            enabled = false;
+            return;
+        }
+
         if (remoteInputSource == null || inputRouter == null)
         {
             Debug.LogError("RemoteInputGateway: assign RemoteInputSource and InputRouter.", this);
@@ -237,8 +262,7 @@ public class RemoteInputGateway : MonoBehaviour
 
     public void ApprovePendingRequest()
     {
-        if (!HasPendingRequest || !inputRouter.isActiveAndEnabled ||
-            !remoteInputSource.isActiveAndEnabled) return;
+        if (!CanApprovePendingRequest) return;
         authority = new Message {
             controllerId = PendingControllerId, requestId = PendingRequestId,
             nickname = PendingNickname
@@ -248,7 +272,12 @@ public class RemoteInputGateway : MonoBehaviour
             requestId = authority.requestId
         };
         ClearPendingRequest();
-        if (!Queue(approval)) ClearAuthority();
+        if (!Queue(approval))
+        {
+            ClearAuthority();
+            return;
+        }
+        RemoteControlPreparing?.Invoke();
     }
 
     public void ReclaimControl()
@@ -336,6 +365,12 @@ public class RemoteInputGateway : MonoBehaviour
                     lastInputAt = packet.receivedAt;
                     controlling = true;
                     inputRouter.UseRemoteInput();
+                    if (!inputRouter.IsRemoteControl)
+                    {
+                        ReclaimControl();
+                        continue;
+                    }
+                    RemoteControlStarted?.Invoke();
                     continue;
                 }
                 if (message.type == "control_revoked")
