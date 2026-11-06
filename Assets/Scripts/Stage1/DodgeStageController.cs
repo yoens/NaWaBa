@@ -37,6 +37,8 @@ public class DodgeStageController : MonoBehaviour
     private float remainingTime;
     private float roundStartedAt;
     private bool initialized;
+    private bool usesPersistentGateway;
+    private RemoteInputSource stageRemoteInputSource;
 
     private bool IsSinglePlayer => gateway != null && gateway.UsesGameSessionMode &&
         GameSession.Mode == GameMode.SinglePlayer;
@@ -52,12 +54,28 @@ public class DodgeStageController : MonoBehaviour
     {
         StopSimulation();
         if (retryButton != null) retryButton.interactable = false;
+        RemoteInputGateway configuredGateway = gateway;
+        usesPersistentGateway = configuredGateway != null &&
+            configuredGateway.UsesGameSessionMode && GameSession.Mode == GameMode.Multiplayer;
+        if (usesPersistentGateway)
+        {
+            stageRemoteInputSource = configuredGateway.RemoteInputTarget;
+            configuredGateway.enabled = false;
+            gateway = RemoteInputGateway.ResolveForScene(configuredGateway);
+        }
         if (gateway != null) gateway.AllowRemoteApproval = false;
 
         if (actorController == null || playerHit == null || bulletSpawner == null ||
             statusText == null || retryButton == null || gateway == null || inputRouter == null)
         {
             Debug.LogError("DodgeStageController: assign all seven Inspector references.", this);
+            enabled = false;
+            return;
+        }
+
+        if (usesPersistentGateway && stageRemoteInputSource == null)
+        {
+            Debug.LogError("DodgeStageController: assign RemoteInputSource on the scene gateway.", this);
             enabled = false;
             return;
         }
@@ -85,6 +103,12 @@ public class DodgeStageController : MonoBehaviour
     private void OnEnable()
     {
         if (!initialized) return;
+        if (usesPersistentGateway && !gateway.BindStageInputs(inputRouter, stageRemoteInputSource))
+        {
+            Debug.LogError("DodgeStageController: could not bind the stage input targets.", this);
+            enabled = false;
+            return;
+        }
 
         gateway.RemoteControlPreparing += OnRemotePreparing;
         gateway.RemoteControlStarted += OnRemoteStarted;
@@ -109,6 +133,7 @@ public class DodgeStageController : MonoBehaviour
             gateway.RemoteControlEnded -= OnRemoteEnded;
             gateway.AllowRemoteApproval = false;
             if (gateway.HasAuthority) gateway.ReclaimControl();
+            if (usesPersistentGateway) gateway.UnbindStageInputs(inputRouter);
         }
 
         if (retryButton != null)
@@ -119,6 +144,12 @@ public class DodgeStageController : MonoBehaviour
 
         StopSimulation();
         if (initialized) ClearBullets();
+    }
+
+    public void PrepareToLeave()
+    {
+        // OnDisable removes event subscriptions, revokes control and clears bullets.
+        enabled = false;
     }
 
     private void Update()

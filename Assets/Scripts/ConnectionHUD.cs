@@ -15,6 +15,7 @@ public class ConnectionHUD : MonoBehaviour
 
     private void Awake()
     {
+        gateway = RemoteInputGateway.ResolveForScene(gateway);
         if (gateway == null || inputRouter == null || statusText == null ||
             remoteButton == null || reclaimButton == null)
         {

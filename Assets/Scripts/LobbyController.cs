@@ -12,10 +12,19 @@ public class LobbyController : MonoBehaviour
     private const string MainMenuScene = "MainMenu";
     private bool loading;
 
-    private bool CanStartSinglePlayer => !loading &&
-        GameSession.Mode == GameMode.SinglePlayer &&
-        GameSession.SelectedCharacter != null &&
-        GameSession.SelectedCharacter.VisualPrefab != null;
+    private bool CanStartStage
+    {
+        get
+        {
+            if (loading || GameSession.SelectedCharacter == null ||
+                GameSession.SelectedCharacter.VisualPrefab == null) return false;
+            if (GameSession.Mode == GameMode.SinglePlayer) return true;
+            MultiplayerHostSession owner = MultiplayerHostSession.Instance;
+            RemoteInputGateway gateway = owner != null ? owner.Gateway : null;
+            return gateway != null && gateway.IsConnected &&
+                !string.IsNullOrEmpty(gateway.InviteUrl);
+        }
+    }
 
     private void Start()
     {
@@ -28,18 +37,18 @@ public class LobbyController : MonoBehaviour
         }
         modeText.text = GameSession.Mode == GameMode.SinglePlayer
             ? "SINGLE PLAYER" : "MULTIPLAYER";
-        startButton.interactable = CanStartSinglePlayer;
+        startButton.interactable = CanStartStage;
     }
 
     private void Update()
     {
         // Character selection may initialize after this component's Start.
-        startButton.interactable = CanStartSinglePlayer;
+        startButton.interactable = CanStartStage;
     }
 
     public void StartStage()
     {
-        if (!isActiveAndEnabled || !CanStartSinglePlayer) return;
+        if (!isActiveAndEnabled || !CanStartStage) return;
         OpenScene(stageSceneName);
     }
 
@@ -59,6 +68,6 @@ public class LobbyController : MonoBehaviour
         }
         loading = true;
         if (startButton != null) startButton.interactable = false;
-        SceneManager.LoadScene(sceneName);
+        SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
     }
 }

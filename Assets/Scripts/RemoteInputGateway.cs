@@ -17,6 +17,95 @@ public class RemoteInputGateway : MonoBehaviour
 
     [SerializeField] private bool useGameSessionMode;
     public bool UsesGameSessionMode => useGameSessionMode;
+    public RemoteInputSource RemoteInputTarget => remoteInputSource;
+
+    public static RemoteInputGateway ResolveForScene(RemoteInputGateway configured)
+    {
+        if (configured == null || !configured.UsesGameSessionMode ||
+            GameSession.Mode != GameMode.Multiplayer) return configured;
+        MultiplayerHostSession owner = MultiplayerHostSession.Instance;
+        return owner != null ? owner.Gateway : null;
+    }
+
+    public bool BindStageInputs(InputRouter router, RemoteInputSource source)
+    {
+        if (!managedLobbySession || router == null || source == null) return false;
+        if (inputRouter != null && inputRouter != router)
+        {
+            Debug.LogError("NaWaBa: another stage already owns the input targets.", this);
+            return false;
+        }
+        AllowRemoteApproval = false;
+        ReclaimControl();
+        inputRouter = router;
+        remoteInputSource = source;
+        remoteInputSource.ClearInput();
+        inputRouter.UseLocalInput();
+        return true;
+    }
+
+    public void UnbindStageInputs(InputRouter expectedRouter)
+    {
+        if (!managedLobbySession || inputRouter != expectedRouter) return;
+        AllowRemoteApproval = false;
+        ReclaimControl();
+        if (!string.IsNullOrEmpty(PendingRequestId))
+        {
+            Queue(new Message {
+                type = "revoke_control", controllerId = PendingControllerId,
+                requestId = PendingRequestId
+            });
+        }
+        ClearPendingRequest();
+        if (remoteInputSource != null) remoteInputSource.ClearInput();
+        if (inputRouter != null) inputRouter.UseLocalInput();
+        remoteInputSource = null;
+        inputRouter = null;
+    }
+
+    // A persistent lobby connection can exist before a stage provides input targets.
+    private bool managedLobbySession;
+    private string inviteUrl = "";
+    private double connectionStartedAt;
+    private static Task pendingShutdown = Task.CompletedTask;
+    public string InviteUrl => IsConnected ? inviteUrl : "";
+    public string ConnectionIssue { get; private set; } = "";
+    public bool IsConnecting => isActiveAndEnabled && session != null &&
+        !session.finished && !helloReceived;
+
+    internal void ConfigureManagedLobbySession()
+    {
+        if (gameObject.activeInHierarchy)
+            throw new InvalidOperationException("Configure the session while inactive.");
+        managedLobbySession = true;
+        useGameSessionMode = true;
+        AllowRemoteApproval = false;
+    }
+
+    public void Reconnect()
+    {
+        if (!Application.isPlaying || !gameObject.activeInHierarchy ||
+            IsConnected || IsConnecting) return;
+        enabled = false;
+        enabled = true;
+    }
+
+    private bool IsValidInviteUrl(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length > 1024 ||
+            !Uri.TryCreate(value, UriKind.Absolute, out Uri invite) ||
+            !Uri.TryCreate(serverUrl, UriKind.Absolute, out Uri server)) return false;
+        string expectedScheme = server.Scheme == "wss" ? "https" : "http";
+        if (invite.Scheme != expectedScheme || invite.Host != server.Host ||
+            invite.Port != server.Port || !string.IsNullOrEmpty(invite.UserInfo) ||
+            invite.AbsolutePath != "/" || !string.IsNullOrEmpty(invite.Query) ||
+            !invite.Fragment.StartsWith("#join=", StringComparison.Ordinal)) return false;
+        string key = invite.Fragment.Substring(6);
+        if (key.Length != 64) return false;
+        foreach (char c in key)
+            if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f')) return false;
+        return true;
+    }
 
     private const int ProtocolVersion = 2;
     private const int MaxPendingMessages = 32;
@@ -95,6 +184,7 @@ public class RemoteInputGateway : MonoBehaviour
         public string grantId;
         public string nickname;
         public string reason;
+        public string inviteUrl;
         public long sequence = -1;
         public float x;
         public float y;
@@ -147,17 +237,29 @@ public class RemoteInputGateway : MonoBehaviour
             return;
         }
 
-        if (remoteInputSource == null || inputRouter == null)
+        // Mode-aware scene components are configuration references, not extra sockets.
+        // Multiplayer networking is owned by the persistent lobby session.
+        if (useGameSessionMode && !managedLobbySession &&
+            GameSession.Mode == GameMode.Multiplayer)
+        {
+            enabled = false;
+            return;
+        }
+
+        if (!managedLobbySession && (remoteInputSource == null || inputRouter == null))
         {
             Debug.LogError("RemoteInputGateway: assign RemoteInputSource and InputRouter.", this);
             enabled = false;
             return;
         }
         helloReceived = false;
+        inviteUrl = "";
+        ConnectionIssue = "";
         ClearPendingRequest();
         ClearAuthority();
         if (!TryReadHostConfig(out HostConfig config))
         {
+            ConnectionIssue = "HOST CONFIG ERROR";
             enabled = false;
             return;
         }
@@ -166,7 +268,20 @@ public class RemoteInputGateway : MonoBehaviour
         serverUrl = config.serverUrl;
         string address = config.serverUrl;
         string hostKey = config.hostKey;
-        current.worker = Task.Run(() => RunSessionAsync(current, address, hostKey));
+        connectionStartedAt = ClockNow();
+        Task previousShutdown = pendingShutdown;
+        current.worker = Task.Run(async () => {
+            try
+            {
+                // Avoid a new local socket while a previous worker is still closing.
+                await previousShutdown.ConfigureAwait(false);
+                current.cancellation.Token.ThrowIfCancellationRequested();
+                await RunSessionAsync(current, address, hostKey).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error) { current.error = error.Message; }
+            finally { current.finished = true; }
+        });
     }
 
     private static async Task RunSessionAsync(Session current, string address, string hostKey)
@@ -177,7 +292,9 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
+                linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
+                linked.CancelAfter(Timeout.Infinite);
                 current.connected = true;
                 Task receive = ReceiveAsync(socket, current, linked.Token);
                 Task send = SendAsync(socket, current, linked.Token);
@@ -305,7 +422,15 @@ public class RemoteInputGateway : MonoBehaviour
         if (current == null) return;
         if (current.finished)
         {
-            Debug.LogWarning("NaWaBa disconnected. " + current.error + " Restart Play to reconnect.", this);
+            ConnectionIssue = "DISCONNECTED";
+            Debug.LogWarning("NaWaBa disconnected. " + current.error +
+                " Use RECONNECT in the multiplayer lobby, or restart Play.", this);
+            enabled = false;
+            return;
+        }
+        if (!helloReceived && ClockNow() - connectionStartedAt >= 120)
+        {
+            ConnectionIssue = "CONNECTION TIMEOUT";
             enabled = false;
             return;
         }
@@ -315,13 +440,16 @@ public class RemoteInputGateway : MonoBehaviour
         {
             for (int i = 0; i < MaxPendingMessages && current.incoming.TryDequeue(out Packet packet); i++)
             {
-                if (ClockNow() - packet.receivedAt >= InputTimeout)
-                    throw new InvalidOperationException("Stale network message.");
+                bool stale = ClockNow() - packet.receivedAt >= InputTimeout;
                 Message message = JsonUtility.FromJson<Message>(packet.json);
                 if (message == null || message.protocolVersion != ProtocolVersion)
                     throw new InvalidOperationException("Protocol mismatch. Update all three parts.");
                 if (message.type == "host_hello")
                 {
+                    // Only accept a same-server participant URL. Never construct it from the host key.
+                    if (!string.IsNullOrEmpty(message.inviteUrl) && !IsValidInviteUrl(message.inviteUrl))
+                        throw new InvalidOperationException("Invalid participant URL from server.");
+                    inviteUrl = message.inviteUrl ?? "";
                     helloReceived = true;
                     Debug.Log("NaWaBa server connected (protocol 2).", this);
                     continue;
@@ -333,6 +461,15 @@ public class RemoteInputGateway : MonoBehaviour
                         string.IsNullOrWhiteSpace(message.nickname) || message.nickname.Length > 20)
                         throw new InvalidOperationException("Invalid control request.");
                     if (authority != null) continue;
+                    if (stale)
+                    {
+                        // A scene-loading hitch must not apply an old request or drop the socket.
+                        Queue(new Message {
+                            type = "revoke_control", controllerId = message.controllerId,
+                            requestId = message.requestId
+                        });
+                        continue;
+                    }
                     PendingControllerId = message.controllerId;
                     PendingRequestId = message.requestId;
                     PendingNickname = message.nickname;
@@ -347,6 +484,7 @@ public class RemoteInputGateway : MonoBehaviour
                 if (message.type == "control_granted")
                 {
                     if (!SameRequest(message, authority)) continue;
+                    if (stale) { ReclaimControl(); continue; }
                     if (string.IsNullOrEmpty(message.grantId))
                         throw new InvalidOperationException("Missing grant ID.");
                     authority.grantId = message.grantId;
@@ -355,7 +493,9 @@ public class RemoteInputGateway : MonoBehaviour
                 if (message.type == "control_started")
                 {
                     if (!CurrentGrant(message) || controlling) continue;
-                    if (!inputRouter.isActiveAndEnabled || !remoteInputSource.isActiveAndEnabled)
+                    if (stale) { ReclaimControl(); continue; }
+                    if (inputRouter == null || remoteInputSource == null ||
+                        !inputRouter.isActiveAndEnabled || !remoteInputSource.isActiveAndEnabled)
                     {
                         ReclaimControl();
                         continue;
@@ -380,6 +520,7 @@ public class RemoteInputGateway : MonoBehaviour
                 }
                 if (message.type != "input") throw new InvalidOperationException("Unknown server message.");
                 if (!controlling || !CurrentGrant(message)) continue;
+                if (stale) { ReclaimControl(); continue; }
                 if (message.sequence < 0 || float.IsNaN(message.x) || float.IsNaN(message.y) ||
                     float.IsInfinity(message.x) || float.IsInfinity(message.y) ||
                     Mathf.Abs(message.x) > 1 || Mathf.Abs(message.y) > 1)
@@ -390,7 +531,8 @@ public class RemoteInputGateway : MonoBehaviour
                 latest = message;
                 receivedAt = packet.receivedAt;
             }
-            if (controlling && (!inputRouter.isActiveAndEnabled || !inputRouter.IsRemoteControl ||
+            if (controlling && (inputRouter == null || remoteInputSource == null ||
+                !inputRouter.isActiveAndEnabled || !inputRouter.IsRemoteControl ||
                 !remoteInputSource.isActiveAndEnabled || ClockNow() - lastInputAt >= InputTimeout))
                 ReclaimControl();
             if (latest != null && controlling && CurrentGrant(latest))
@@ -398,6 +540,7 @@ public class RemoteInputGateway : MonoBehaviour
         }
         catch (Exception error)
         {
+            ConnectionIssue = "CONNECTION ERROR";
             Debug.LogError("NaWaBa: " + error.Message, this);
             enabled = false;
         }
@@ -406,12 +549,15 @@ public class RemoteInputGateway : MonoBehaviour
     private void OnDisable()
     {
         helloReceived = false;
+        inviteUrl = "";
         ClearPendingRequest();
         ClearAuthority();
         var previous = session;
         session = null;
         if (previous == null) return;
         previous.cancellation.Cancel();
+        pendingShutdown = pendingShutdown.IsCompleted ? previous.worker :
+            Task.WhenAll(pendingShutdown, previous.worker);
         _ = previous.worker.ContinueWith(_ => {
             previous.sendSignal.Dispose();
             previous.cancellation.Dispose();
