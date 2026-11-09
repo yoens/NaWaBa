@@ -71,7 +71,7 @@ public class MultiplayerLobbyController : MonoBehaviour
             copyLabel.text = canCopy && Time.unscaledTime < copiedUntil ? "COPIED!" : "COPY LINK";
 
         if (connected)
-            connectionStatusText.text = canCopy ? "CONNECTED" : "CONNECTED\nUPDATE SERVER";
+            connectionStatusText.text = canCopy ? "CONNECTED\nROOM: " + gateway.RoomLabel : "CONNECTED\nUPDATE SERVER";
         else if (connecting)
             connectionStatusText.text = "CONNECTING...";
         else

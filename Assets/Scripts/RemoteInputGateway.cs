@@ -69,6 +69,8 @@ public class RemoteInputGateway : MonoBehaviour
     private double connectionStartedAt;
     private static Task pendingShutdown = Task.CompletedTask;
     public string InviteUrl => IsConnected ? inviteUrl : "";
+    public string RoomId { get; private set; } = "";
+    public string RoomLabel => IsConnected && RoomId.Length >= 8 ? RoomId.Substring(0, 8) : "-";
     public string ConnectionIssue { get; private set; } = "";
     public bool IsConnecting => isActiveAndEnabled && session != null &&
         !session.finished && !helloReceived;
@@ -90,8 +92,11 @@ public class RemoteInputGateway : MonoBehaviour
         enabled = true;
     }
 
-    private bool IsValidInviteUrl(string value)
+    private bool IsValidInviteUrl(string value, string roomId)
     {
+        if (string.IsNullOrEmpty(roomId) || !Guid.TryParseExact(roomId, "D", out Guid parsedRoom) ||
+            parsedRoom.ToString("D") != roomId) return false;
+        string prefix = "#room=" + roomId + "&join=";
         if (string.IsNullOrEmpty(value) || value.Length > 1024 ||
             !Uri.TryCreate(value, UriKind.Absolute, out Uri invite) ||
             !Uri.TryCreate(serverUrl, UriKind.Absolute, out Uri server)) return false;
@@ -99,15 +104,15 @@ public class RemoteInputGateway : MonoBehaviour
         if (invite.Scheme != expectedScheme || invite.Host != server.Host ||
             invite.Port != server.Port || !string.IsNullOrEmpty(invite.UserInfo) ||
             invite.AbsolutePath != "/" || !string.IsNullOrEmpty(invite.Query) ||
-            !invite.Fragment.StartsWith("#join=", StringComparison.Ordinal)) return false;
-        string key = invite.Fragment.Substring(6);
+            !invite.Fragment.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        string key = invite.Fragment.Substring(prefix.Length);
         if (key.Length != 64) return false;
         foreach (char c in key)
             if (!(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f')) return false;
         return true;
     }
 
-    private const int ProtocolVersion = 2;
+    private const int ProtocolVersion = 3;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
     private Session session;
@@ -179,6 +184,7 @@ public class RemoteInputGateway : MonoBehaviour
     {
         public int protocolVersion = ProtocolVersion;
         public string type;
+        public string roomId;
         public string controllerId;
         public string requestId;
         public string grantId;
@@ -254,6 +260,7 @@ public class RemoteInputGateway : MonoBehaviour
         }
         helloReceived = false;
         inviteUrl = "";
+        RoomId = "";
         ConnectionIssue = "";
         ClearPendingRequest();
         ClearAuthority();
@@ -292,6 +299,7 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
+                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "3");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
                 linked.CancelAfter(Timeout.Infinite);
@@ -372,6 +380,7 @@ public class RemoteInputGateway : MonoBehaviour
             enabled = false;
             return false;
         }
+        message.roomId = RoomId;
         current.outgoing.Enqueue(JsonUtility.ToJson(message));
         current.sendSignal.Release();
         return true;
@@ -447,14 +456,17 @@ public class RemoteInputGateway : MonoBehaviour
                 if (message.type == "host_hello")
                 {
                     // Only accept a same-server participant URL. Never construct it from the host key.
-                    if (!string.IsNullOrEmpty(message.inviteUrl) && !IsValidInviteUrl(message.inviteUrl))
+                    if (helloReceived || !IsValidInviteUrl(message.inviteUrl, message.roomId))
                         throw new InvalidOperationException("Invalid participant URL from server.");
-                    inviteUrl = message.inviteUrl ?? "";
+                    RoomId = message.roomId;
+                    inviteUrl = message.inviteUrl;
                     helloReceived = true;
-                    Debug.Log("NaWaBa server connected (protocol 2).", this);
+                    Debug.Log("NaWaBa connected (protocol 3), room: " + RoomId, this);
                     continue;
                 }
                 if (!helloReceived) throw new InvalidOperationException("Missing server hello.");
+                if (message.roomId != RoomId)
+                    throw new InvalidOperationException("Server room mismatch.");
                 if (message.type == "control_request")
                 {
                     if (string.IsNullOrEmpty(message.controllerId) || string.IsNullOrEmpty(message.requestId) ||
@@ -550,6 +562,7 @@ public class RemoteInputGateway : MonoBehaviour
     {
         helloReceived = false;
         inviteUrl = "";
+        RoomId = "";
         ClearPendingRequest();
         ClearAuthority();
         var previous = session;

@@ -43,7 +43,7 @@ public class ConnectionHUD : MonoBehaviour
         }
 
         string player = string.IsNullOrEmpty(gateway.PlayerName) ? "-" : gateway.PlayerName;
-        statusText.text = $"Server: {(gateway.IsConnected ? "CONNECTED" : "DISCONNECTED")}\n" +
+        statusText.text = $"Server: {(gateway.IsConnected ? "CONNECTED" : "DISCONNECTED")} / Room: {gateway.RoomLabel}\n" +
             $"Mode: {gateway.ControlState}\nPlayer: {player}";
         remoteButton.interactable = gateway.CanApprovePendingRequest;
         reclaimButton.interactable = gateway.HasAuthority;

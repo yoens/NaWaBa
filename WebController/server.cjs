@@ -6,27 +6,27 @@ const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
 
-// Protocol 2: server.cjs, index.html, RemoteInputGateway.cs must be updated together.
+// Protocol 3: update server.cjs, index.html and RemoteInputGateway.cs together.
+// Each room belongs to one live host connection. No client can select another
+// room after authentication. This in-memory registry is for ONE server process.
 function createApplication(options = {}) {
-    const { hostKey, joinKey } = options;
+    const PROTOCOL = 3;
+    const { hostKey } = options;
     const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
-    if (!validKey(hostKey) || !validKey(joinKey) || hostKey === joinKey) {
-        throw new Error("Two distinct 32-byte keys are required.");
-    }
+    if (!validKey(hostKey)) throw new Error("A 32-byte host key is required.");
     const matchesKey = (value, expected) => validKey(value) &&
         timingSafeEqual(Buffer.from(value, "hex"), Buffer.from(expected, "hex"));
     const { WebSocket, WebSocketServer } = options.socketLibrary || require("ws");
     const authTimeout = options.authTimeout ?? 3000;
-    const inputTimeout = options.inputTimeout || 500;
-    const readyTimeout = options.readyTimeout || 15000;
-    const requestTimeout = options.requestTimeout || 30000;
+    const inputTimeout = options.inputTimeout ?? 500;
+    const readyTimeout = options.readyTimeout ?? 15000;
+    const requestTimeout = options.requestTimeout ?? 30000;
     const startDelay = options.startDelay ?? 3000;
-    const log = options.log || console.log;
     const heartbeatMs = options.heartbeatMs ?? 20000;
-    let host = null;
-    let controller = null;
-    let pending = null;
-    let grant = null;
+    const maxRooms = options.maxRooms ?? 8;
+    const maxConnections = options.maxConnections ?? 32;
+    const log = options.log || console.log;
+    const rooms = new Map();
 
     const server = http.createServer((request, response) => {
         if (request.url === "/healthz") {
@@ -41,26 +41,21 @@ function createApplication(options = {}) {
         }
         fs.readFile(path.join(__dirname, "index.html"), (error, data) => {
             response.writeHead(error ? 500 : 200, {
-                "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "no-store",
-                "Referrer-Policy": "no-referrer",
-                "X-Content-Type-Options": "nosniff"
+                "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff"
             });
             response.end(error ? "Cannot read index.html" : data);
         });
     });
     const wss = new WebSocketServer({ server, maxPayload: 2048 });
-    // Do not derive this from incoming Host or X-Forwarded-* headers.
+    // Never derive this from incoming Host or X-Forwarded-* headers.
     const origin = () => options.publicOrigin || `http://127.0.0.1:${server.address().port}`;
 
-    function send(socket, message) {
+    function send(room, socket, message) {
         if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-        if (socket.bufferedAmount > 4096) {
-            socket.terminate();
-            return false;
-        }
+        if (socket.bufferedAmount > 4096) { socket.terminate(); return false; }
         try {
-            socket.send(JSON.stringify({ ...message, protocolVersion: 2 }));
+            socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL, roomId: room.id }));
             return true;
         } catch {
             socket.terminate();
@@ -68,45 +63,44 @@ function createApplication(options = {}) {
         }
     }
     function ids(record) {
-        return {
-            controllerId: record.controllerId,
-            requestId: record.requestId,
-            grantId: record.grantId || "",
-            nickname: record.nickname
-        };
+        return { controllerId: record.controllerId, requestId: record.requestId,
+            grantId: record.grantId || "", nickname: record.nickname };
     }
-    function cancelPending(reason) {
-        if (!pending) return;
-        const previous = pending;
-        pending = null;
+    function cancelPending(room, reason) {
+        const previous = room.pending;
+        if (!previous) return;
+        room.pending = null;
         const message = { type: "request_rejected", ...ids(previous), reason };
-        send(host, message);
-        send(controller, message);
+        send(room, room.host, message);
+        send(room, room.controller, message);
     }
-    function revoke(reason) {
-        if (!grant) return;
-        const previous = grant;
-        grant = null; // Invalidate first, before notifying either peer.
+    function revoke(room, reason) {
+        const previous = room.grant;
+        if (!previous) return;
+        room.grant = null; // Invalidate before notifying either peer.
         const message = { type: "control_revoked", ...ids(previous), reason };
-        send(host, message);
-        send(controller, message);
-        log(`[control] revoked: ${reason}`);
+        send(room, room.host, message);
+        send(room, room.controller, message);
+        log(`[room ${room.id}] revoked: ${reason}`);
     }
     function matches(message, record) {
         return record && message.controllerId === record.controllerId &&
             message.requestId === record.requestId;
     }
-    function matchesGrant(message) {
-        return matches(message, grant) && message.grantId === grant.grantId;
+    function matchesGrant(room, message) {
+        return matches(message, room.grant) && message.grantId === room.grant.grantId;
     }
-    function parse(socket, data, isBinary) {
+    function parse(socket, data, isBinary, room = null) {
         if (socket.readyState !== WebSocket.OPEN) return null;
         try {
             if (isBinary) throw new Error();
             const message = JSON.parse(data.toString());
-            if (!message || typeof message !== "object" ||
-                message.protocolVersion !== 2 || typeof message.type !== "string") {
-                throw new Error();
+            if (!message || typeof message !== "object" || Array.isArray(message) ||
+                message.protocolVersion !== PROTOCOL || typeof message.type !== "string") throw new Error();
+            // The socket's captured room is authoritative, never the message's room ID.
+            if (room && message.roomId !== room.id) {
+                socket.close(1008, "Room mismatch");
+                return null;
             }
             return message;
         } catch {
@@ -114,10 +108,22 @@ function createApplication(options = {}) {
             return null;
         }
     }
+    function closeRoom(room) {
+        if (room.closed) return;
+        room.closed = true;
+        rooms.delete(room.id); // Old invites become invalid immediately.
+        room.host = null;
+        cancelPending(room, "host_disconnected");
+        revoke(room, "host_disconnected");
+        send(room, room.controller, { type: "host_status", hostOnline: false });
+        if (room.controller) room.controller.close(1000, "Room closed");
+        room.controller = null;
+        log(`[room ${room.id}] closed`);
+    }
 
     wss.on("connection", (socket, request) => {
         socket.on("error", error => log(`[socket] ${error.message}`));
-        if (wss.clients.size > 16) {
+        if (wss.clients.size > maxConnections) {
             socket.close(1013, "Server connection limit");
             return;
         }
@@ -127,69 +133,56 @@ function createApplication(options = {}) {
         let messagesInWindow = 0;
         socket.on("message", () => {
             const now = performance.now();
-            if (now - messageWindowAt >= 1000) {
-                messageWindowAt = now;
-                messagesInWindow = 0;
-            }
+            if (now - messageWindowAt >= 1000) { messageWindowAt = now; messagesInWindow = 0; }
             if (++messagesInWindow > 120) socket.close(1008, "Message rate limit");
         });
         const requestOrigin = request.headers.origin;
-        if (requestOrigin && requestOrigin !== origin()) {
-            socket.close(1008, "Invalid origin");
-            return;
-        }
+        if (requestOrigin && requestOrigin !== origin()) { socket.close(1008, "Invalid origin"); return; }
 
         if (request.url === "/host") {
             if (!matchesKey(request.headers["x-nawaba-host-key"], hostKey)) {
                 socket.close(1008, "Host authentication failed");
                 return;
             }
-            if (host) {
-                socket.close(1008, "Host already connected");
+            if (request.headers["x-nawaba-protocol"] !== String(PROTOCOL)) {
+                socket.close(1008, "Update Unity client to protocol 3");
                 return;
             }
-            host = socket;
-            // Send the participant link only after host authentication succeeds.
-            send(host, { type: "host_hello", inviteUrl: `${origin()}/#join=${joinKey}` });
-            send(controller, { type: "host_status", hostOnline: true });
-            log("[host] connected");
+            if (rooms.size >= maxRooms) { socket.close(1013, "Room limit reached"); return; }
+            let id;
+            do { id = randomUUID(); } while (rooms.has(id));
+            let joinKey;
+            do { joinKey = randomBytes(32).toString("hex"); } while (joinKey === hostKey);
+            const room = { id, joinKey, host: socket, controller: null,
+                pending: null, grant: null, closed: false };
+            rooms.set(id, room);
+            send(room, socket, { type: "host_hello", inviteUrl: `${origin()}/#room=${id}&join=${joinKey}` });
+            log(`[room ${id}] created`);
             socket.on("message", (data, binary) => {
-                if (host !== socket) return;
-                const message = parse(socket, data, binary);
+                if (room.closed || room.host !== socket) return;
+                const message = parse(socket, data, binary, room);
                 if (!message) return;
                 if (message.type === "approve_control") {
-                    if (!matches(message, pending) || grant ||
-                        !controller || controller.readyState !== WebSocket.OPEN) return;
-                    const approved = pending;
-                    pending = null;
-                    grant = {
-                        ...approved, grantId: randomUUID(), active: false,
-                        approvedAt: performance.now(), startAt: null, lastInputAt: 0, lastSequence: -1
-                    };
-                    const notification = { type: "control_granted", ...ids(grant) };
-                    if (!send(host, notification) || !send(controller, notification)) {
-                        revoke("connection_lost");
-                    } else {
-                        log(`[control] approved: ${approved.nickname}`);
-                    }
+                    if (!matches(message, room.pending) || room.grant ||
+                        !room.controller || room.controller.readyState !== WebSocket.OPEN) return;
+                    const approved = room.pending;
+                    room.pending = null;
+                    room.grant = { ...approved, grantId: randomUUID(), active: false,
+                        approvedAt: performance.now(), startAt: null, lastInputAt: 0, lastSequence: -1 };
+                    const notification = { type: "control_granted", ...ids(room.grant) };
+                    if (!send(room, socket, notification) || !send(room, room.controller, notification))
+                        revoke(room, "connection_lost");
                     return;
                 }
                 if (message.type === "revoke_control") {
                     // requestId also cancels an approval still in transit to Unity.
-                    if (matches(message, pending)) cancelPending("host_reclaimed");
-                    if (matches(message, grant)) revoke("host_reclaimed");
+                    if (matches(message, room.pending)) cancelPending(room, "host_reclaimed");
+                    if (matches(message, room.grant)) revoke(room, "host_reclaimed");
                     return;
                 }
                 socket.close(1008, "Invalid host message");
             });
-            socket.on("close", () => {
-                if (host !== socket) return;
-                host = null;
-                cancelPending("host_disconnected");
-                revoke("host_disconnected");
-                send(controller, { type: "host_status", hostOnline: false });
-                log("[host] disconnected");
-            });
+            socket.on("close", () => closeRoom(room));
             return;
         }
 
@@ -197,112 +190,101 @@ function createApplication(options = {}) {
             socket.close(1008, "Invalid controller connection");
             return;
         }
-        // Authentication does not reserve the single participant slot.
+        // Unauthenticated sockets do not occupy a room's guest slot.
         const authTimer = setTimeout(() => socket.close(1008, "Authentication timeout"), authTimeout);
         authTimer.unref();
         socket.once("close", () => clearTimeout(authTimer));
         socket.once("message", (data, binary) => {
             clearTimeout(authTimer);
-            if (socket.readyState !== WebSocket.OPEN) return;
             const authentication = parse(socket, data, binary);
             if (!authentication) return;
-            if (authentication.type !== "join" || !matchesKey(authentication.joinKey, joinKey)) {
+            const room = typeof authentication.roomId === "string" ? rooms.get(authentication.roomId) : null;
+            if (authentication.type !== "join" || !room || room.closed ||
+                !room.host || room.host.readyState !== WebSocket.OPEN ||
+                !matchesKey(authentication.joinKey, room.joinKey)) {
                 socket.close(1008, "Invalid participant link");
                 return;
             }
-            if (controller) {
-                socket.close(1008, "Controller already connected");
-                return;
-            }
-            controller = socket;
+            if (room.controller) { socket.close(1008, "Controller already connected"); return; }
+            room.controller = socket;
             const controllerId = randomUUID();
-            send(socket, { type: "controller_hello", controllerId,
-                hostOnline: !!host && host.readyState === WebSocket.OPEN });
-            log("[controller] connected");
-
+            send(room, socket, { type: "controller_hello", controllerId, hostOnline: true });
+            log(`[room ${room.id}] guest connected`);
             socket.on("message", (data, binary) => {
-                if (controller !== socket) return;
-                const message = parse(socket, data, binary);
+                if (room.closed || room.controller !== socket) return;
+                const message = parse(socket, data, binary, room);
                 if (!message) return;
                 if (message.type === "request_control") {
-                    if (pending || grant) return;
-                    const nickname = typeof message.nickname === "string"
-                        ? message.nickname.trim() : "";
-                    if (!nickname || nickname.length > 20 || !host ||
-                        host.readyState !== WebSocket.OPEN) {
-                        send(socket, { type: "request_rejected", reason:
+                    if (room.pending || room.grant) return;
+                    const nickname = typeof message.nickname === "string" ? message.nickname.trim() : "";
+                    if (!nickname || nickname.length > 20 || !room.host ||
+                        room.host.readyState !== WebSocket.OPEN) {
+                        send(room, socket, { type: "request_rejected", reason:
                             !nickname || nickname.length > 20 ? "invalid_nickname" : "host_disconnected" });
                         return;
                     }
-                    pending = { controllerId, requestId: randomUUID(), nickname,
-                        requestedAt: performance.now() };
-                    if (!send(host, { type: "control_request", ...ids(pending) })) {
-                        cancelPending("host_disconnected");
+                    room.pending = { controllerId, requestId: randomUUID(), nickname, requestedAt: performance.now() };
+                    if (!send(room, room.host, { type: "control_request", ...ids(room.pending) })) {
+                        cancelPending(room, "host_disconnected");
                         return;
                     }
-                    send(socket, { type: "request_received", ...ids(pending) });
-                    log(`[request] ${nickname}`);
+                    send(room, socket, { type: "request_received", ...ids(room.pending) });
                     return;
                 }
                 if (message.type === "ready") {
-                    if (!matchesGrant(message) || grant.active || grant.startAt !== null) return;
-                    // Only the server decides when the countdown ends. Duplicate ready is ignored.
-                    grant.startAt = performance.now() + startDelay;
-                    if (!send(socket, { type: "countdown_started", ...ids(grant), countdownMs: startDelay })) {
-                        revoke("connection_lost");
-                    }
+                    if (!matchesGrant(room, message) || room.grant.active || room.grant.startAt !== null) return;
+                    room.grant.startAt = performance.now() + startDelay;
+                    if (!send(room, socket, { type: "countdown_started", ...ids(room.grant), countdownMs: startDelay }))
+                        revoke(room, "connection_lost");
                     return;
                 }
                 if (message.type === "release_control") {
-                    if (matches(message, pending)) cancelPending("controller_stopped");
-                    if (matchesGrant(message)) revoke("controller_stopped");
+                    if (matches(message, room.pending)) cancelPending(room, "controller_stopped");
+                    if (matchesGrant(room, message)) revoke(room, "controller_stopped");
                     return;
                 }
-                if (message.type !== "input") {
-                    socket.close(1008, "Invalid controller message");
-                    return;
-                }
-                // Only the actual connected participant's currently active grant can move Unity.
-                if (!matchesGrant(message) || !grant.active ||
-                    grant.controllerId !== controllerId) return;
+                if (message.type !== "input") { socket.close(1008, "Invalid controller message"); return; }
+                if (!matchesGrant(room, message) || !room.grant.active || room.grant.controllerId !== controllerId) return;
                 if (!Number.isSafeInteger(message.sequence) || message.sequence < 0 ||
                     !Number.isFinite(message.x) || !Number.isFinite(message.y) ||
                     Math.abs(message.x) > 1 || Math.abs(message.y) > 1) {
-                    revoke("invalid_input");
+                    revoke(room, "invalid_input");
                     socket.close(1008, "Invalid input");
                     return;
                 }
-                if (message.sequence <= grant.lastSequence) return;
-                grant.lastSequence = message.sequence;
-                grant.lastInputAt = performance.now();
-                if (!send(host, { type: "input", ...ids(grant),
-                    sequence: message.sequence, x: message.x, y: message.y })) {
-                    revoke("host_disconnected");
-                }
+                if (message.sequence <= room.grant.lastSequence) return;
+                room.grant.lastSequence = message.sequence;
+                room.grant.lastInputAt = performance.now();
+                if (!send(room, room.host, { type: "input", ...ids(room.grant),
+                    sequence: message.sequence, x: message.x, y: message.y })) revoke(room, "host_disconnected");
             });
             socket.on("close", () => {
-                if (controller !== socket) return;
-                controller = null;
-                cancelPending("controller_disconnected");
-                revoke("controller_disconnected");
-                log("[controller] disconnected");
+                if (room.closed || room.controller !== socket) return;
+                room.controller = null;
+                cancelPending(room, "controller_disconnected");
+                revoke(room, "controller_disconnected");
+                log(`[room ${room.id}] guest disconnected`);
             });
-        }); // authenticated participant
+        });
     });
 
     const timer = setInterval(() => {
         const now = performance.now();
-        if (pending && now - pending.requestedAt >= requestTimeout) cancelPending("request_timeout");
-        if (grant && !grant.active && grant.startAt === null &&
-            now - grant.approvedAt >= readyTimeout) revoke("ready_timeout");
-        // No detached callback: revoking the current grant also cancels its countdown.
-        if (grant && !grant.active && grant.startAt !== null && now >= grant.startAt) {
-            grant.active = true;
-            grant.lastInputAt = now;
-            const notification = { type: "control_started", ...ids(grant) };
-            if (!send(host, notification) || !send(controller, notification)) revoke("connection_lost");
+        for (const room of rooms.values()) {
+            if (room.pending && now - room.pending.requestedAt >= requestTimeout) cancelPending(room, "request_timeout");
+            if (room.grant && !room.grant.active && room.grant.startAt === null &&
+                now - room.grant.approvedAt >= readyTimeout) revoke(room, "ready_timeout");
+            // Revocation removes the grant, so a cancelled countdown cannot restart it.
+            if (room.grant && !room.grant.active && room.grant.startAt !== null && now >= room.grant.startAt) {
+                room.grant.active = true;
+                room.grant.lastInputAt = now;
+                const notification = { type: "control_started", ...ids(room.grant) };
+                if (!send(room, room.host, notification) || !send(room, room.controller, notification))
+                    revoke(room, "connection_lost");
+            }
+            if (room.grant && room.grant.active && now - room.grant.lastInputAt >= inputTimeout)
+                revoke(room, "input_timeout");
         }
-        if (grant && grant.active && now - grant.lastInputAt >= inputTimeout) revoke("input_timeout");
     }, 50);
     timer.unref();
     const heartbeat = setInterval(() => {
@@ -322,12 +304,10 @@ function createApplication(options = {}) {
 if (require.main === module) {
     try {
         const config = readServerConfig();
-        const joinKey = randomBytes(32).toString("hex");
-        const app = createApplication({ hostKey: config.hostKey, joinKey, publicOrigin: config.publicOrigin });
+        const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
-            console.log(`[server] listening on ${config.listenHost}:${config.port}`);
-            console.log(`Invite URL: ${app.origin()}/#join=${joinKey}`);
-            console.log("The invite changes on each server restart. Host approval is still required.");
+            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 3)`);
+            console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });
     } catch (error) {
         console.error("Cannot start:", error.message);
