@@ -66,6 +66,10 @@ public class RemoteInputGateway : MonoBehaviour
     // A persistent lobby connection can exist before a stage provides input targets.
     private bool managedLobbySession;
     private string inviteUrl = "";
+    private bool guestStatusSupported;
+    private bool guestConnected;
+    public bool SupportsGuestStatus => IsConnected && guestStatusSupported;
+    public bool IsGuestConnected => SupportsGuestStatus && guestConnected;
     private double connectionStartedAt;
     private static Task pendingShutdown = Task.CompletedTask;
     public string InviteUrl => IsConnected ? inviteUrl : "";
@@ -191,6 +195,8 @@ public class RemoteInputGateway : MonoBehaviour
         public string nickname;
         public string reason;
         public string inviteUrl;
+        public bool guestStatusSupported;
+        public bool guestConnected;
         public long sequence = -1;
         public float x;
         public float y;
@@ -261,6 +267,8 @@ public class RemoteInputGateway : MonoBehaviour
         helloReceived = false;
         inviteUrl = "";
         RoomId = "";
+        guestStatusSupported = false;
+        guestConnected = false;
         ConnectionIssue = "";
         ClearPendingRequest();
         ClearAuthority();
@@ -300,6 +308,7 @@ public class RemoteInputGateway : MonoBehaviour
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
                 socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "3");
+                socket.Options.SetRequestHeader("X-NaWaBa-Guest-Status", "1");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
                 linked.CancelAfter(Timeout.Infinite);
@@ -460,6 +469,8 @@ public class RemoteInputGateway : MonoBehaviour
                         throw new InvalidOperationException("Invalid participant URL from server.");
                     RoomId = message.roomId;
                     inviteUrl = message.inviteUrl;
+                    guestStatusSupported = message.guestStatusSupported;
+                    guestConnected = guestStatusSupported && message.guestConnected;
                     helloReceived = true;
                     Debug.Log("NaWaBa connected (protocol 3), room: " + RoomId, this);
                     continue;
@@ -467,6 +478,19 @@ public class RemoteInputGateway : MonoBehaviour
                 if (!helloReceived) throw new InvalidOperationException("Missing server hello.");
                 if (message.roomId != RoomId)
                     throw new InvalidOperationException("Server room mismatch.");
+                if (message.type == "controller_status")
+                {
+                    if (!guestStatusSupported)
+                        throw new InvalidOperationException("Unexpected guest status message.");
+                    // This is a connection snapshot, not movement input: scene-loading age is irrelevant.
+                    guestConnected = message.guestConnected;
+                    if (!guestConnected)
+                    {
+                        ClearPendingRequest();
+                        ClearAuthority();
+                    }
+                    continue;
+                }
                 if (message.type == "control_request")
                 {
                     if (string.IsNullOrEmpty(message.controllerId) || string.IsNullOrEmpty(message.requestId) ||
@@ -563,6 +587,8 @@ public class RemoteInputGateway : MonoBehaviour
         helloReceived = false;
         inviteUrl = "";
         RoomId = "";
+        guestStatusSupported = false;
+        guestConnected = false;
         ClearPendingRequest();
         ClearAuthority();
         var previous = session;

@@ -62,6 +62,11 @@ function createApplication(options = {}) {
             return false;
         }
     }
+    // Opt-in keeps older protocol-3 Unity builds compatible: they reject unknown message types.
+    function notifyGuestStatus(room, connected) {
+        if (!room.reportGuestStatus || room.closed) return;
+        send(room, room.host, { type: "controller_status", guestConnected: connected });
+    }
     function ids(record) {
         return { controllerId: record.controllerId, requestId: record.requestId,
             grantId: record.grantId || "", nickname: record.nickname };
@@ -154,9 +159,11 @@ function createApplication(options = {}) {
             let joinKey;
             do { joinKey = randomBytes(32).toString("hex"); } while (joinKey === hostKey);
             const room = { id, joinKey, host: socket, controller: null,
-                pending: null, grant: null, closed: false };
+                pending: null, grant: null, closed: false,
+                reportGuestStatus: request.headers["x-nawaba-guest-status"] === "1" };
             rooms.set(id, room);
-            send(room, socket, { type: "host_hello", inviteUrl: `${origin()}/#room=${id}&join=${joinKey}` });
+            send(room, socket, { type: "host_hello", inviteUrl: `${origin()}/#room=${id}&join=${joinKey}`,
+                guestStatusSupported: room.reportGuestStatus, guestConnected: false });
             log(`[room ${id}] created`);
             socket.on("message", (data, binary) => {
                 if (room.closed || room.host !== socket) return;
@@ -209,6 +216,7 @@ function createApplication(options = {}) {
             room.controller = socket;
             const controllerId = randomUUID();
             send(room, socket, { type: "controller_hello", controllerId, hostOnline: true });
+            notifyGuestStatus(room, true);
             log(`[room ${room.id}] guest connected`);
             socket.on("message", (data, binary) => {
                 if (room.closed || room.controller !== socket) return;
@@ -263,6 +271,7 @@ function createApplication(options = {}) {
                 room.controller = null;
                 cancelPending(room, "controller_disconnected");
                 revoke(room, "controller_disconnected");
+                notifyGuestStatus(room, false);
                 log(`[room ${room.id}] guest disconnected`);
             });
         });
@@ -307,6 +316,7 @@ if (require.main === module) {
         const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
             console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 3)`);
+            console.log("Guest status notifications enabled for supported Unity clients.");
             console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });
     } catch (error) {
