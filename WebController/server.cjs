@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
+const { createVideoExperiment } = require("./webrtc-experiment.cjs");
 
 // Protocol 3: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
@@ -28,7 +29,10 @@ function createApplication(options = {}) {
     const log = options.log || console.log;
     const rooms = new Map();
 
+    const videoExperiment = createVideoExperiment({ hostKey, getOrigin: () => origin() });
+
     const server = http.createServer((request, response) => {
+        if (videoExperiment(request, response)) return;
         if (request.url === "/healthz") {
             response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
             response.end('{"ok":true}');
