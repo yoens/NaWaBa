@@ -112,7 +112,7 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
         if (!videoTexture.Create()) throw new InvalidOperationException("Could not create video texture.");
         StartCoroutine(Guarded(CaptureFrames()));
         while (!firstCapture) yield return null;
-        track = new VideoStreamTrack(videoTexture);
+        track = new VideoStreamTrack(videoTexture, Graphics.Blit);
         stream = new MediaStream();
         stream.AddTrack(track);
         yield return null;
