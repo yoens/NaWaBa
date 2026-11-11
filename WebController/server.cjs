@@ -31,7 +31,6 @@ function createApplication(options = {}) {
 
 
     const server = http.createServer((request, response) => {
-        
         if (request.url === "/healthz") {
             response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
             response.end('{"ok":true}');
@@ -212,6 +211,16 @@ function createApplication(options = {}) {
                     return;
                 }
                 if (message.type === "revoke_control") {
+                    // Only the owning host can report an outcome for its currently running grant.
+                    if (message.reason === "round_cleared" || message.reason === "round_failed") {
+                        if (matchesGrant(room, message) && room.grant.active)
+                            revoke(room, message.reason);
+                        return;
+                    }
+                    if (["input_timeout", "video_timeout"].includes(message.reason)) {
+                        if (matchesGrant(room, message)) revoke(room, message.reason);
+                        return;
+                    }
                     // requestId also cancels an approval still in transit to Unity.
                     if (matches(message, room.pending)) cancelPending(room, "host_reclaimed");
                     if (matches(message, room.grant)) revoke(room, "host_reclaimed");

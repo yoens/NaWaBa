@@ -264,13 +264,20 @@ public class DodgeStageController : MonoBehaviour
     {
         if (!IsPlaying && state != StageState.PreparingRemote) return;
 
+        bool wasRemoteRound = state == StageState.PlayingRemote;
         // Set the terminal state before revocation emits RemoteControlEnded.
         // That callback must not overwrite CLEAR/FAILED with CANCELLED.
         state = result;
         StopSimulation();
         ClearBullets();
 
-        if (gateway.HasAuthority) gateway.ReclaimControl();
+        if (gateway.HasAuthority)
+        {
+            if (wasRemoteRound && (result == StageState.Cleared || result == StageState.Failed))
+                gateway.CompleteRemoteRound(result == StageState.Cleared);
+            else
+                gateway.ReclaimControl();
+        }
 
         statusText.text = result == StageState.Cleared ? "CLEAR!" :
             result == StageState.Failed ? "FAILED" : "CANCELLED";

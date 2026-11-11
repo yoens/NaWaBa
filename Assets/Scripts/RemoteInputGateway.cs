@@ -472,7 +472,20 @@ public class RemoteInputGateway : MonoBehaviour
         RemoteControlPreparing?.Invoke();
     }
 
-    public void ReclaimControl()
+    public void ReclaimControl() => ReleaseControl("host_reclaimed");
+
+    // Called by the stage only after a remote round reaches its terminal state.
+    public void CompleteRemoteRound(bool cleared)
+    {
+        if (!controlling || string.IsNullOrEmpty(CurrentGrantId))
+        {
+            ReclaimControl();
+            return;
+        }
+        ReleaseControl(cleared ? "round_cleared" : "round_failed");
+    }
+
+    private void ReleaseControl(string reason)
     {
         Message previous = authority;
         ClearAuthority(); // Immediate local recovery, even if the network is stalled.
@@ -480,7 +493,7 @@ public class RemoteInputGateway : MonoBehaviour
         {
             Queue(new Message {
                 type = "revoke_control", controllerId = previous.controllerId,
-                requestId = previous.requestId, grantId = previous.grantId
+                requestId = previous.requestId, grantId = previous.grantId, reason = reason
             });
         }
     }
@@ -639,7 +652,7 @@ public class RemoteInputGateway : MonoBehaviour
                 }
                 if (message.type != "input") throw new InvalidOperationException("Unknown server message.");
                 if (!controlling || !CurrentGrant(message)) continue;
-                if (stale) { ReclaimControl(); continue; }
+                if (stale) { ReleaseControl("input_timeout"); continue; }
                 if (message.sequence < 0 || float.IsNaN(message.x) || float.IsNaN(message.y) ||
                     float.IsInfinity(message.x) || float.IsInfinity(message.y) ||
                     Mathf.Abs(message.x) > 1 || Mathf.Abs(message.y) > 1)
@@ -651,10 +664,12 @@ public class RemoteInputGateway : MonoBehaviour
                 receivedAt = packet.receivedAt;
             }
             if (authority != null && videoReady && ClockNow() - lastVideoAt >= 1.5)
-                ReclaimControl();
+                ReleaseControl("video_timeout");
+            if (controlling && ClockNow() - lastInputAt >= InputTimeout)
+                ReleaseControl("input_timeout");
             if (controlling && (inputRouter == null || remoteInputSource == null ||
                 !inputRouter.isActiveAndEnabled || !inputRouter.IsRemoteControl ||
-                !remoteInputSource.isActiveAndEnabled || ClockNow() - lastInputAt >= InputTimeout))
+                !remoteInputSource.isActiveAndEnabled))
                 ReclaimControl();
             if (latest != null && controlling && CurrentGrant(latest))
                 remoteInputSource.SetMoveInput(new Vector2(latest.x, latest.y), ClockNow() - receivedAt);
