@@ -160,6 +160,8 @@ public class DodgeStageController : MonoBehaviour
         // Refresh while READY too, so the initial disabled button can recover.
         RefreshAvailability();
 
+        if (state == StageState.PreparingRemote)
+            statusText.text = gateway.ControlState;
         if (!IsPlaying) return;
 
         if (state == StageState.PlayingRemote &&
@@ -206,7 +208,7 @@ public class DodgeStageController : MonoBehaviour
 
         state = StageState.PreparingRemote;
         ResetAttempt();
-        statusText.text = "WAITING FOR WEB";
+        statusText.text = "CONNECTING VIDEO";
         RefreshAvailability();
     }
 

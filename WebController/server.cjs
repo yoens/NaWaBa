@@ -7,11 +7,11 @@ const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
 const { createVideoExperiment } = require("./webrtc-experiment.cjs");
 
-// Protocol 3: update server.cjs, index.html and RemoteInputGateway.cs together.
+// Protocol 4: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
 // room after authentication. This in-memory registry is for ONE server process.
 function createApplication(options = {}) {
-    const PROTOCOL = 3;
+    const PROTOCOL = 4;
     const { hostKey } = options;
     const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
     if (!validKey(hostKey)) throw new Error("A 32-byte host key is required.");
@@ -20,7 +20,8 @@ function createApplication(options = {}) {
     const { WebSocket, WebSocketServer } = options.socketLibrary || require("ws");
     const authTimeout = options.authTimeout ?? 3000;
     const inputTimeout = options.inputTimeout ?? 500;
-    const readyTimeout = options.readyTimeout ?? 15000;
+    const readyTimeout = options.readyTimeout ?? 60000;
+    const videoTimeout = options.videoTimeout ?? 1500;
     const requestTimeout = options.requestTimeout ?? 30000;
     const startDelay = options.startDelay ?? 3000;
     const heartbeatMs = options.heartbeatMs ?? 20000;
@@ -38,6 +39,14 @@ function createApplication(options = {}) {
             response.end('{"ok":true}');
             return;
         }
+        if (request.url === "/room-video.js") {
+            fs.readFile(path.join(__dirname, "room-video.js"), (error, data) => {
+                response.writeHead(error ? 500 : 200, { "Content-Type": "text/javascript; charset=utf-8",
+                    "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+                response.end(error ? "Video script unavailable" : data);
+            });
+            return;
+        }
         if (request.url !== "/" && request.url !== "/index.html") {
             response.writeHead(404);
             response.end("Not Found");
@@ -51,13 +60,13 @@ function createApplication(options = {}) {
             response.end(error ? "Cannot read index.html" : data);
         });
     });
-    const wss = new WebSocketServer({ server, maxPayload: 2048 });
+    const wss = new WebSocketServer({ server, maxPayload: 65536 });
     // Never derive this from incoming Host or X-Forwarded-* headers.
     const origin = () => options.publicOrigin || `http://127.0.0.1:${server.address().port}`;
 
     function send(room, socket, message) {
         if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-        if (socket.bufferedAmount > 4096) { socket.terminate(); return false; }
+        if (socket.bufferedAmount > 131072) { socket.terminate(); return false; }
         try {
             socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL, roomId: room.id }));
             return true;
@@ -66,7 +75,7 @@ function createApplication(options = {}) {
             return false;
         }
     }
-    // Opt-in keeps older protocol-3 Unity builds compatible: they reject unknown message types.
+    // Opt-in keeps older protocol-4 Unity builds compatible: they reject unknown message types.
     function notifyGuestStatus(room, connected) {
         if (!room.reportGuestStatus || room.closed) return;
         send(room, room.host, { type: "controller_status", guestConnected: connected });
@@ -117,6 +126,10 @@ function createApplication(options = {}) {
             return null;
         }
     }
+    function validSdp(value) {
+        return typeof value === "string" && Buffer.byteLength(value, "utf8") <= 60000 &&
+            value.startsWith("v=0") && value.includes("m=video");
+    }
     function closeRoom(room) {
         if (room.closed) return;
         room.closed = true;
@@ -140,10 +153,12 @@ function createApplication(options = {}) {
         socket.on("pong", () => { socket.alive = true; });
         let messageWindowAt = performance.now();
         let messagesInWindow = 0;
-        socket.on("message", () => {
+        let bytesInWindow = 0;
+        socket.on("message", data => {
             const now = performance.now();
-            if (now - messageWindowAt >= 1000) { messageWindowAt = now; messagesInWindow = 0; }
-            if (++messagesInWindow > 120) socket.close(1008, "Message rate limit");
+            if (now - messageWindowAt >= 1000) { messageWindowAt = now; messagesInWindow = 0; bytesInWindow = 0; }
+            bytesInWindow += data.length;
+            if (++messagesInWindow > 120 || bytesInWindow > 262144) socket.close(1008, "Message rate limit");
         });
         const requestOrigin = request.headers.origin;
         if (requestOrigin && requestOrigin !== origin()) { socket.close(1008, "Invalid origin"); return; }
@@ -154,7 +169,7 @@ function createApplication(options = {}) {
                 return;
             }
             if (request.headers["x-nawaba-protocol"] !== String(PROTOCOL)) {
-                socket.close(1008, "Update Unity client to protocol 3");
+                socket.close(1008, "Update Unity client to protocol 4");
                 return;
             }
             if (rooms.size >= maxRooms) { socket.close(1013, "Room limit reached"); return; }
@@ -179,10 +194,23 @@ function createApplication(options = {}) {
                     const approved = room.pending;
                     room.pending = null;
                     room.grant = { ...approved, grantId: randomUUID(), active: false,
+                        offerSent: false, answerSent: false, lastVideoAt: 0,
                         approvedAt: performance.now(), startAt: null, lastInputAt: 0, lastSequence: -1 };
                     const notification = { type: "control_granted", ...ids(room.grant) };
                     if (!send(room, socket, notification) || !send(room, room.controller, notification))
                         revoke(room, "connection_lost");
+                    return;
+                }
+                if (message.type === "video_offer") {
+                    if (!matchesGrant(room, message) || room.grant.offerSent) return;
+                    if (!validSdp(message.sdp)) { revoke(room, "video_failed"); return; }
+                    room.grant.offerSent = true;
+                    if (!send(room, room.controller, { type: "video_offer", ...ids(room.grant), sdp: message.sdp }))
+                        revoke(room, "connection_lost");
+                    return;
+                }
+                if (message.type === "video_failed") {
+                    if (matchesGrant(room, message)) revoke(room, "video_failed");
                     return;
                 }
                 if (message.type === "revoke_control") {
@@ -243,11 +271,35 @@ function createApplication(options = {}) {
                     send(room, socket, { type: "request_received", ...ids(room.pending) });
                     return;
                 }
-                if (message.type === "ready") {
-                    if (!matchesGrant(room, message) || room.grant.active || room.grant.startAt !== null) return;
-                    room.grant.startAt = performance.now() + startDelay;
-                    if (!send(room, socket, { type: "countdown_started", ...ids(room.grant), countdownMs: startDelay }))
+                if (message.type === "video_answer") {
+                    if (!matchesGrant(room, message) || !room.grant.offerSent || room.grant.answerSent) return;
+                    if (!validSdp(message.sdp)) { revoke(room, "video_failed"); return; }
+                    room.grant.answerSent = true;
+                    if (!send(room, room.host, { type: "video_answer", ...ids(room.grant), sdp: message.sdp }))
                         revoke(room, "connection_lost");
+                    return;
+                }
+                if (message.type === "video_ready") {
+                    if (!matchesGrant(room, message) || !room.grant.answerSent ||
+                        room.grant.active || room.grant.startAt !== null) return;
+                    // Browser emits this only after a video frame reaches its compositor.
+                    const now = performance.now();
+                    room.grant.lastVideoAt = now;
+                    room.grant.startAt = now + startDelay;
+                    const notification = { type: "countdown_started", ...ids(room.grant), countdownMs: startDelay };
+                    if (!send(room, socket, notification) || !send(room, room.host, notification))
+                        revoke(room, "connection_lost");
+                    return;
+                }
+                if (message.type === "video_alive") {
+                    if (!matchesGrant(room, message) || room.grant.startAt === null) return;
+                    room.grant.lastVideoAt = performance.now();
+                    if (!send(room, room.host, { type: "video_alive", ...ids(room.grant) }))
+                        revoke(room, "connection_lost");
+                    return;
+                }
+                if (message.type === "video_failed") {
+                    if (matchesGrant(room, message)) revoke(room, "video_failed");
                     return;
                 }
                 if (message.type === "release_control") {
@@ -287,6 +339,8 @@ function createApplication(options = {}) {
             if (room.pending && now - room.pending.requestedAt >= requestTimeout) cancelPending(room, "request_timeout");
             if (room.grant && !room.grant.active && room.grant.startAt === null &&
                 now - room.grant.approvedAt >= readyTimeout) revoke(room, "ready_timeout");
+            if (room.grant && room.grant.startAt !== null &&
+                now - room.grant.lastVideoAt >= videoTimeout) revoke(room, "video_timeout");
             // Revocation removes the grant, so a cancelled countdown cannot restart it.
             if (room.grant && !room.grant.active && room.grant.startAt !== null && now >= room.grant.startAt) {
                 room.grant.active = true;
@@ -319,7 +373,7 @@ if (require.main === module) {
         const config = readServerConfig();
         const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
-            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 3)`);
+            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 4)`);
             console.log("Guest status notifications enabled for supported Unity clients.");
             console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });

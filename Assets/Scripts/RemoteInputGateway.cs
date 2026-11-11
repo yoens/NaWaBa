@@ -116,7 +116,7 @@ public class RemoteInputGateway : MonoBehaviour
         return true;
     }
 
-    private const int ProtocolVersion = 3;
+    private const int ProtocolVersion = 4;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
     private Session session;
@@ -125,6 +125,54 @@ public class RemoteInputGateway : MonoBehaviour
     private bool controlling;
     private long lastSequence = -1;
     private double lastInputAt;
+    private double lastVideoAt;
+    private double countdownEndsAt;
+    private bool videoReady;
+    private string localVideoGrant = "";
+    private bool localVideoConnected;
+    private NaWaBaRoomVideoSender videoSender;
+    public string CurrentGrantId => authority != null ? authority.grantId ?? "" : "";
+    public int RemoteCountdown => countdownEndsAt > 0
+        ? Math.Max(0, (int)Math.Ceiling(countdownEndsAt - ClockNow())) : 0;
+    public event Action<string> RemoteVideoRequested;
+    public event Action<string, string> RemoteVideoAnswer;
+
+    public bool RegisterVideoSender(NaWaBaRoomVideoSender sender)
+    {
+        if (sender == null || (videoSender != null && videoSender != sender)) return false;
+        videoSender = sender;
+        return true;
+    }
+
+    public void UnregisterVideoSender(NaWaBaRoomVideoSender sender)
+    {
+        if (videoSender != sender) return;
+        videoSender = null;
+        if (HasAuthority) ReclaimControl();
+    }
+
+    public bool SendVideoOffer(string grant, string sdp)
+    {
+        if (string.IsNullOrEmpty(grant) || CurrentGrantId != grant || string.IsNullOrEmpty(sdp) ||
+            Encoding.UTF8.GetByteCount(sdp) > 60000) return false;
+        return Queue(new Message { type = "video_offer", controllerId = authority.controllerId,
+            requestId = authority.requestId, grantId = grant, sdp = sdp });
+    }
+
+    public void SetLocalVideoConnected(string grant, bool connected)
+    {
+        if (string.IsNullOrEmpty(grant) || CurrentGrantId != grant) return;
+        localVideoGrant = grant;
+        localVideoConnected = connected;
+    }
+
+    public void ReportVideoFailure(string grant)
+    {
+        if (string.IsNullOrEmpty(grant) || CurrentGrantId != grant) return;
+        Queue(new Message { type = "video_failed", controllerId = authority.controllerId,
+            requestId = authority.requestId, grantId = grant });
+        ClearAuthority();
+    }
 
     public bool IsConnected => session != null && session.connected &&
         !session.finished && helloReceived;
@@ -136,9 +184,10 @@ public class RemoteInputGateway : MonoBehaviour
     public bool IsControlling => controlling;
 
     // A stage can temporarily disallow approvals without disconnecting the host.
-    // Defaults to true so InputLab keeps its existing behavior.
+    // A live video sender and valid stage input targets are also required.
     public bool AllowRemoteApproval { get; set; } = true;
     public bool CanApprovePendingRequest => AllowRemoteApproval && HasPendingRequest &&
+        videoSender != null && videoSender.isActiveAndEnabled &&
         inputRouter != null && inputRouter.isActiveAndEnabled &&
         remoteInputSource != null && remoteInputSource.isActiveAndEnabled;
 
@@ -147,7 +196,8 @@ public class RemoteInputGateway : MonoBehaviour
     public event Action RemoteControlStarted;
     public event Action RemoteControlEnded;
     public string PlayerName => authority != null ? authority.nickname : PendingNickname;
-    public string ControlState => controlling ? "REMOTE" : authority != null ? "WAITING FOR WEB" : "LOCAL";
+    public string ControlState => controlling ? "REMOTE" : authority == null ? "LOCAL" :
+        videoReady ? "START IN " + RemoteCountdown : "CONNECTING VIDEO";
 
     [Serializable]
     private class HostConfig
@@ -195,6 +245,8 @@ public class RemoteInputGateway : MonoBehaviour
         public string nickname;
         public string reason;
         public string inviteUrl;
+        public string sdp;
+        public int countdownMs;
         public bool guestStatusSupported;
         public bool guestConnected;
         public long sequence = -1;
@@ -234,6 +286,11 @@ public class RemoteInputGateway : MonoBehaviour
         bool hadAuthority = authority != null;
         authority = null;
         controlling = false;
+        videoReady = false;
+        localVideoConnected = false;
+        localVideoGrant = "";
+        countdownEndsAt = 0;
+        lastVideoAt = 0;
         lastSequence = -1;
         if (remoteInputSource != null) remoteInputSource.ClearInput();
         if (inputRouter != null) inputRouter.UseLocalInput();
@@ -307,7 +364,7 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
-                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "3");
+                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "4");
                 socket.Options.SetRequestHeader("X-NaWaBa-Guest-Status", "1");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
@@ -339,7 +396,7 @@ public class RemoteInputGateway : MonoBehaviour
 
     private static async Task ReceiveAsync(ClientWebSocket socket, Session current, CancellationToken token)
     {
-        byte[] buffer = new byte[2048];
+        byte[] buffer = new byte[65536];
         while (!token.IsCancellationRequested)
         {
             int length = 0;
@@ -472,7 +529,7 @@ public class RemoteInputGateway : MonoBehaviour
                     guestStatusSupported = message.guestStatusSupported;
                     guestConnected = guestStatusSupported && message.guestConnected;
                     helloReceived = true;
-                    Debug.Log("NaWaBa connected (protocol 3), room: " + RoomId, this);
+                    Debug.Log("NaWaBa connected (protocol 4), room: " + RoomId, this);
                     continue;
                 }
                 if (!helloReceived) throw new InvalidOperationException("Missing server hello.");
@@ -524,13 +581,39 @@ public class RemoteInputGateway : MonoBehaviour
                     if (string.IsNullOrEmpty(message.grantId))
                         throw new InvalidOperationException("Missing grant ID.");
                     authority.grantId = message.grantId;
+                    RemoteVideoRequested?.Invoke(message.grantId);
+                    continue;
+                }
+                if (message.type == "video_answer")
+                {
+                    if (!CurrentGrant(message)) continue;
+                    if (string.IsNullOrEmpty(message.sdp) || Encoding.UTF8.GetByteCount(message.sdp) > 60000)
+                        throw new InvalidOperationException("Invalid video answer.");
+                    RemoteVideoAnswer?.Invoke(message.grantId, message.sdp);
+                    continue;
+                }
+                if (message.type == "countdown_started")
+                {
+                    if (!CurrentGrant(message)) continue;
+                    if (stale || message.countdownMs < 0 || message.countdownMs > 10000)
+                    { ReclaimControl(); continue; }
+                    videoReady = true;
+                    lastVideoAt = packet.receivedAt;
+                    countdownEndsAt = packet.receivedAt + message.countdownMs / 1000.0;
+                    continue;
+                }
+                if (message.type == "video_alive")
+                {
+                    if (CurrentGrant(message) && videoReady) lastVideoAt = packet.receivedAt;
                     continue;
                 }
                 if (message.type == "control_started")
                 {
                     if (!CurrentGrant(message) || controlling) continue;
                     if (stale) { ReclaimControl(); continue; }
-                    if (inputRouter == null || remoteInputSource == null ||
+                    if (!videoReady || !localVideoConnected || localVideoGrant != CurrentGrantId ||
+                        ClockNow() - lastVideoAt >= 1.5 ||
+                        inputRouter == null || remoteInputSource == null ||
                         !inputRouter.isActiveAndEnabled || !remoteInputSource.isActiveAndEnabled)
                     {
                         ReclaimControl();
@@ -567,6 +650,8 @@ public class RemoteInputGateway : MonoBehaviour
                 latest = message;
                 receivedAt = packet.receivedAt;
             }
+            if (authority != null && videoReady && ClockNow() - lastVideoAt >= 1.5)
+                ReclaimControl();
             if (controlling && (inputRouter == null || remoteInputSource == null ||
                 !inputRouter.isActiveAndEnabled || !inputRouter.IsRemoteControl ||
                 !remoteInputSource.isActiveAndEnabled || ClockNow() - lastInputAt >= InputTimeout))

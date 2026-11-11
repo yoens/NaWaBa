@@ -3,10 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>NaWaBa 입력 실험장</title>
+    <title>NaWaBa 원격 플레이</title>
     <style>
         * { box-sizing: border-box; }
-        body { max-width: 600px; margin: 40px auto; padding: 24px; font-family: sans-serif;
+        body { max-width: 1000px; margin: 16px auto; padding: 24px; font-family: sans-serif;
             background: #17212b; color: #eef3f8; line-height: 1.7; }
         h1 { font-size: 28px; }
         label { display: block; margin-bottom: 6px; }
@@ -18,29 +18,55 @@
         button:focus-visible, input:focus-visible { outline: 3px solid #80d8ff; outline-offset: 3px; }
         #input { padding: 16px; background: #263646; font-family: monospace; }
         .hint { color: #b4c8d8; font-size: 14px; }
+        .video-wrap { position: relative; background: #080d12; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; }
+        video { display: block; width: 100%; height: 100%; object-fit: contain; }
+        #videoOverlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            pointer-events: none; text-align: center; padding: 16px; font-size: clamp(20px, 4vw, 42px);
+            font-weight: bold; text-shadow: 0 2px 8px black; }
+        #videoOverlay:empty { display: none; }
+        #playVideo { position: absolute; bottom: 16px; left: 16px; }
+        .pad { display: grid; grid-template-columns: repeat(3, 60px); gap: 6px; justify-content: center; }
+        .pad button { margin: 0; touch-action: none; user-select: none; }
+        .pad button[data-key="KeyW"] { grid-column: 2; }
+        .pad button[data-key="KeyA"] { grid-column: 1; }
+        [hidden] { display: none !important; }
     </style>
 </head>
 <body>
-    <h1>NaWaBa 입력 실험장</h1>
-    <p>신청하고 호스트의 승인을 받은 뒤, 조작 시작을 누르세요. 3초 카운트다운 후 조작할 수 있습니다.</p>
+    <h1>NaWaBa 원격 플레이</h1>
+    <p>조작을 신청하면 호스트 승인 후 게임 영상이 연결됩니다. 화면이 표시된 뒤 3초 후 시작합니다.</p>
     <label for="nickname">닉네임 (1~20자)</label>
     <input id="nickname" maxlength="20" autocomplete="off" placeholder="예: Yeonsu">
     <button id="request" disabled>조작 신청</button>
     <p id="requestStatus" role="status">서버 연결 중…</p>
-    <button id="start" disabled>조작 시작</button>
+    <div class="video-wrap">
+        <video id="gameVideo" autoplay muted playsinline></video>
+        <div id="videoOverlay">호스트 승인 대기</div>
+        <button id="playVideo" hidden>영상 재생</button>
+    </div>
+    <p id="videoStats" class="hint">승인 후 게임 영상이 표시됩니다.</p>
     <button id="stop" disabled>조작 중지</button>
     <p id="status" role="status">승인 전에는 입력을 보낼 수 없습니다.</p>
     <p id="room" class="hint"></p>
+    <div class="pad" aria-label="이동 버튼">
+        <button data-key="KeyW" disabled aria-label="앞으로">▲</button>
+        <button data-key="KeyA" disabled aria-label="왼쪽">◀</button>
+        <button data-key="KeyS" disabled aria-label="뒤로">▼</button>
+        <button data-key="KeyD" disabled aria-label="오른쪽">▶</button>
+    </div>
     <p id="input">x=0, y=0</p>
     <p class="hint">WASD 또는 방향키로 조작합니다. 조작 중 다른 창·탭으로 이동하면 권한을 반환합니다.
-        다시 조작하려면 새로 신청하세요. 승인 후 15초 안에 시작하세요.</p>
+        다시 조작하려면 새로 신청하세요. 영상 연결이 60초 안에 완료되지 않으면 취소됩니다.</p>
+    <script src="/room-video.js"></script>
     <script>
     (() => {
         "use strict";
         const nicknameInput = document.getElementById("nickname");
         const requestButton = document.getElementById("request");
         const requestStatus = document.getElementById("requestStatus");
-        const startButton = document.getElementById("start");
+        const videoOverlay = document.getElementById("videoOverlay");
+        const directionButtons = Array.from(document.querySelectorAll(".pad button"));
+        const pointers = new Map();
         const stopButton = document.getElementById("stop");
         const statusText = document.getElementById("status");
         const inputText = document.getElementById("input");
@@ -56,7 +82,7 @@
         document.getElementById("room").textContent = `방: ${roomId.slice(0, 8)}`;
         const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/controller`);
         socket.addEventListener("open", () => {
-            socket.send(JSON.stringify({ protocolVersion: 3, type: "join", roomId, joinKey }));
+            socket.send(JSON.stringify({ protocolVersion: 4, type: "join", roomId, joinKey }));
         });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
@@ -65,9 +91,18 @@
         let controllerId = "";
         let requestId = "";
         let grantId = "";
-        let phase = "idle"; // idle -> requesting -> pending -> approved -> starting -> active
+        let phase = "idle"; // idle -> requesting -> pending -> video -> starting -> active
         let sequence = 0;
         let countdownEndsAt = 0;
+        let lastVideoHeartbeat = 0;
+        const videoReceiver = new window.NaWaBaRoomVideoReceiver({
+            video: document.getElementById("gameVideo"), stats: document.getElementById("videoStats"),
+            playButton: document.getElementById("playVideo"),
+            onAnswer: (id, sdp) => id === grantId && send("video_answer", { ...identity(), sdp }),
+            onReady: id => { if (id === grantId) tryStartCountdown(); },
+            onFailure: videoFailure,
+            onStatus: text => { statusText.textContent = text; }
+        });
         const reasons = {
             host_reclaimed: "호스트가 조작 권한을 회수했습니다.",
             controller_stopped: "조작을 중지했습니다.",
@@ -75,7 +110,9 @@
             host_disconnected: "호스트 연결이 종료되었습니다. 호스트에게 새 링크를 받아 주세요.",
             connection_lost: "연결이 끊겨 권한을 반환했습니다.",
             request_timeout: "30초 동안 승인되지 않아 신청이 만료되었습니다.",
-            ready_timeout: "승인 후 15초 안에 시작하지 않아 권한이 만료되었습니다.",
+            ready_timeout: "60초 안에 영상이 준비되지 않아 승인이 취소되었습니다. 다시 신청하세요.",
+            video_failed: "영상 연결에 실패하거나 종료되어 조작을 중지했습니다. 다시 신청하세요.",
+            video_timeout: "영상 수신이 멈춰 조작을 중지했습니다. 다시 신청하세요.",
             input_timeout: "입력 전송이 끊겨 권한을 반환했습니다.",
             invalid_nickname: "닉네임은 1~20자로 입력하세요.",
             invalid_input: "올바르지 않은 입력으로 조작이 종료되었습니다."
@@ -84,10 +121,14 @@
         function renderButtons() {
             requestButton.disabled = !connected || !hostOnline || phase !== "idle";
             nicknameInput.disabled = phase !== "idle";
-            startButton.disabled = !connected || phase !== "approved";
-            stopButton.disabled = !connected || !["approved", "starting", "active"].includes(phase);
+            for (const button of directionButtons) button.disabled = phase !== "active";
+            stopButton.disabled = !connected || !["video", "starting", "active"].includes(phase);
         }
         function clearControl() {
+            videoReceiver.stop();
+            videoOverlay.textContent = "다시 신청하면 영상이 연결됩니다.";
+            pointers.clear();
+            lastVideoHeartbeat = 0;
             phase = "idle";
             requestId = "";
             grantId = "";
@@ -99,14 +140,14 @@
         }
         function send(type, extra = {}) {
             if (!connected || socket.readyState !== WebSocket.OPEN) return false;
-            if (socket.bufferedAmount > 4096) {
+            if (socket.bufferedAmount > 131072) {
                 connected = false;
                 clearControl();
                 statusText.textContent = "전송 지연: 연결을 종료합니다. 새로고침하세요.";
                 socket.close();
                 return false;
             }
-            socket.send(JSON.stringify({ ...extra, protocolVersion: 3, roomId, type }));
+            socket.send(JSON.stringify({ ...extra, protocolVersion: 4, roomId, type }));
             return true;
         }
         function identity() { return { controllerId, requestId, grantId }; }
@@ -114,6 +155,7 @@
             if (phase !== "starting" || !countdownEndsAt) return;
             const remaining = Math.ceil((countdownEndsAt - performance.now()) / 1000);
             const text = remaining > 0 ? `${remaining} · 잠시 후 조작을 시작합니다.` : "시작 확인 중…";
+            videoOverlay.textContent = remaining > 0 ? String(remaining) : "시작 확인 중…";
             if (statusText.textContent !== text) statusText.textContent = text;
         }
         function sameRequest(message) {
@@ -121,10 +163,11 @@
         }
         function sendInput() {
             if (phase !== "active") return;
-            const left = keys.has("KeyA") || keys.has("ArrowLeft");
-            const right = keys.has("KeyD") || keys.has("ArrowRight");
-            const back = keys.has("KeyS") || keys.has("ArrowDown");
-            const forward = keys.has("KeyW") || keys.has("ArrowUp");
+            const down = code => keys.has(code) || Array.from(pointers.values()).includes(code);
+            const left = down("KeyA") || down("ArrowLeft");
+            const right = down("KeyD") || down("ArrowRight");
+            const back = down("KeyS") || down("ArrowDown");
+            const forward = down("KeyW") || down("ArrowUp");
             const x = Number(right) - Number(left);
             const y = Number(forward) - Number(back);
             if (send("input", { ...identity(), sequence: ++sequence, x, y })) {
@@ -140,11 +183,34 @@
             requestStatus.textContent = "다시 조작하려면 새로 신청하세요.";
         }
 
+        function videoFailure(reason) {
+            const previous = identity();
+            const hadGrant = !!grantId;
+            clearControl();
+            if (hadGrant) send("video_failed", previous);
+            statusText.textContent = reason;
+            requestStatus.textContent = "영상 연결을 확인한 뒤 다시 신청하세요.";
+        }
+        function tryStartCountdown() {
+            if (phase !== "video" || document.hidden || !videoReceiver.isFresh()) return;
+            if (!document.hasFocus()) {
+                statusText.textContent = "영상 준비 완료 · 웹 화면을 클릭하면 3초 후 시작합니다.";
+                return;
+            }
+            keys.clear();
+            pointers.clear();
+            phase = "starting";
+            lastVideoHeartbeat = performance.now();
+            statusText.textContent = "영상 준비 완료 · 카운트다운 확인 중…";
+            renderButtons();
+            if (!send("video_ready", identity())) stopControl("서버 연결을 확인하세요.");
+        }
+        window.addEventListener("focus", tryStartCountdown);
         socket.addEventListener("message", event => {
             let message;
             try {
                 message = JSON.parse(event.data);
-                if (!message || message.protocolVersion !== 3 || message.roomId !== roomId) throw new Error();
+                if (!message || message.protocolVersion !== 4 || message.roomId !== roomId) throw new Error();
             } catch {
                 connected = false;
                 clearControl();
@@ -185,10 +251,18 @@
             }
             if (message.type === "control_granted" && phase === "pending" && sameRequest(message)) {
                 grantId = message.grantId;
-                phase = "approved";
+                phase = "video";
                 requestStatus.textContent = "호스트 승인 완료";
-                statusText.textContent = "15초 안에 조작 시작을 누르세요.";
+                statusText.textContent = "게임 영상 연결 중…";
+                videoOverlay.textContent = "게임 영상 연결 중…";
                 renderButtons();
+                if (document.hidden) { stopControl("탭이 비활성화되어 승인을 취소했습니다."); return; }
+                videoReceiver.start(grantId);
+                return;
+            }
+            if (message.type === "video_offer" && phase === "video" &&
+                sameRequest(message) && message.grantId === grantId) {
+                videoReceiver.acceptOffer(grantId, message.sdp);
                 return;
             }
             if (message.type === "countdown_started" && phase === "starting" &&
@@ -200,7 +274,9 @@
             }
             if (message.type === "control_started" && phase === "starting" &&
                 sameRequest(message) && message.grantId === grantId) {
+                if (!videoReceiver.isFresh()) { videoFailure("영상 수신이 멈춰 시작을 취소했습니다."); return; }
                 countdownEndsAt = 0;
+                videoOverlay.textContent = "";
                 phase = "active";
                 statusText.textContent = "조작 중 · WASD / 방향키";
                 renderButtons();
@@ -243,14 +319,6 @@
             requestStatus.textContent = "신청 전송 중…";
             if (!send("request_control", { nickname })) clearControl();
         });
-        startButton.addEventListener("click", () => {
-            if (phase !== "approved" || document.hidden) return;
-            keys.clear();
-            phase = "starting";
-            renderButtons();
-            statusText.textContent = "조작 시작 확인 중…";
-            if (!send("ready", identity())) stopControl("연결을 확인하세요.");
-        });
         stopButton.addEventListener("click", () => stopControl("조작 중지 · 권한을 반환했습니다."));
         window.addEventListener("keydown", event => {
             if (!["starting", "active"].includes(phase) || !moveKeys.has(event.code)) return;
@@ -265,11 +333,24 @@
             keys.delete(event.code);
             sendInput();
         });
+        for (const button of directionButtons) {
+            button.addEventListener("pointerdown", event => {
+                if (phase !== "active") return;
+                event.preventDefault();
+                button.setPointerCapture(event.pointerId);
+                pointers.set(event.pointerId, button.dataset.key);
+                sendInput();
+            });
+            const release = event => { pointers.delete(event.pointerId); sendInput(); };
+            button.addEventListener("pointerup", release);
+            button.addEventListener("pointercancel", release);
+            button.addEventListener("lostpointercapture", release);
+        }
         window.addEventListener("blur", () => {
-            if (phase === "active" || phase === "starting") stopControl("다른 창으로 이동하여 권한을 반환했습니다.");
+            if (["video", "active", "starting"].includes(phase)) stopControl("다른 창으로 이동하여 권한을 반환했습니다.");
         });
         document.addEventListener("visibilitychange", () => {
-            if (document.hidden && ["approved", "starting", "active"].includes(phase))
+            if (document.hidden && ["video", "starting", "active"].includes(phase))
                 stopControl("탭이 비활성화되어 권한을 반환했습니다.");
         });
         window.addEventListener("pagehide", () => {
@@ -277,6 +358,14 @@
             socket.close();
         });
         setInterval(() => {
+            if (phase === "video") tryStartCountdown();
+            if (["starting", "active"].includes(phase)) {
+                if (!videoReceiver.isFresh()) { videoFailure("영상 수신이 멈춰 조작을 중지했습니다."); return; }
+                if (performance.now() - lastVideoHeartbeat >= 250) {
+                    lastVideoHeartbeat = performance.now();
+                    send("video_alive", identity());
+                }
+            }
             if (phase === "active") sendInput();
             else renderCountdown();
         }, 50);
