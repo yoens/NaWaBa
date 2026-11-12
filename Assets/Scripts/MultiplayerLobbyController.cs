@@ -45,6 +45,9 @@ public class MultiplayerLobbyController : MonoBehaviour
         reconnectButton.onClick.AddListener(Reconnect);
         listenersAdded = true;
         hostSession = MultiplayerHostSession.EnsureSession();
+        // Tell the web page the host is back in the lobby (sent once connected).
+        if (hostSession != null && hostSession.Gateway != null)
+            hostSession.Gateway.ReportStage("lobby", "대기실", "");
         RefreshView();
     }
 

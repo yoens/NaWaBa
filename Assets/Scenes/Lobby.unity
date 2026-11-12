@@ -1167,6 +1167,7 @@ MonoBehaviour:
   - {fileID: 11400000, guid: 2cb5e3c6582613946ba694591a592d65, type: 2}
   - {fileID: 11400000, guid: 323910e28d4c8ef4d9e81dafa472f23e, type: 2}
   - {fileID: 11400000, guid: 40a33c375c6d2e44a86704024ef7d8b9, type: 2}
+  - {fileID: 11400000, guid: f9ff0cdc373076c468921b4bdfb5f16d, type: 2}
   previewRoot: {fileID: 705344609}
   characterNameText: {fileID: 484659973}
 --- !u!114 &432504062
@@ -1614,13 +1615,13 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 705344608}
   serializedVersion: 2
-  m_LocalRotation: {x: 0.1656112, y: 0.29613733, z: -0.052217, w: 0.9392279}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 1, z: 0, w: 0}
+  m_LocalPosition: {x: 0, y: -0.5, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 20, y: 35, z: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 180, z: 0}
 --- !u!1 &808973802
 GameObject:
   m_ObjectHideFlags: 0

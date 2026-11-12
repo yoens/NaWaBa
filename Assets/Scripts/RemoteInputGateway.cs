@@ -27,7 +27,8 @@ public class RemoteInputGateway : MonoBehaviour
         return owner != null ? owner.Gateway : null;
     }
 
-    public bool BindStageInputs(InputRouter router, RemoteInputSource source)
+    public bool BindStageInputs(InputRouter router, RemoteInputSource source,
+        string stageId = "stage", string stageName = "", string controls = "move")
     {
         if (!managedLobbySession || router == null || source == null) return false;
         if (inputRouter != null && inputRouter != router)
@@ -41,6 +42,7 @@ public class RemoteInputGateway : MonoBehaviour
         remoteInputSource = source;
         remoteInputSource.ClearInput();
         inputRouter.UseLocalInput();
+        ReportStage(stageId, stageName, controls);
         return true;
     }
 
@@ -61,6 +63,30 @@ public class RemoteInputGateway : MonoBehaviour
         if (inputRouter != null) inputRouter.UseLocalInput();
         remoteInputSource = null;
         inputRouter = null;
+        ReportStage("loading", "이동 중", "");
+    }
+
+    // What the web page shows (current stage and which buttons to enable).
+    // Remembered and re-sent after every (re)connection.
+    private string reportedStageId = "lobby";
+    private string reportedStageName = "대기실";
+    private string reportedControls = "";
+
+    public void ReportStage(string stageId, string stageName, string controls)
+    {
+        reportedStageId = string.IsNullOrEmpty(stageId) ? "stage" : stageId;
+        reportedStageName = stageName ?? "";
+        reportedControls = controls ?? "";
+        SendStageStatus();
+    }
+
+    private void SendStageStatus()
+    {
+        if (!IsConnected) return;
+        Queue(new Message {
+            type = "stage_status", stageId = reportedStageId,
+            stageName = reportedStageName, controls = reportedControls
+        });
     }
 
     // A persistent lobby connection can exist before a stage provides input targets.
@@ -116,7 +142,7 @@ public class RemoteInputGateway : MonoBehaviour
         return true;
     }
 
-    private const int ProtocolVersion = 4;
+    private const int ProtocolVersion = 5;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
     private Session session;
@@ -252,6 +278,11 @@ public class RemoteInputGateway : MonoBehaviour
         public long sequence = -1;
         public float x;
         public float y;
+        public long jump;      // cumulative jump presses in this grant
+        public float look;     // camera yaw input, -1..1
+        public string stageId;
+        public string stageName;
+        public string controls;
     }
 
     private class Packet
@@ -364,7 +395,7 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
-                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "4");
+                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "5");
                 socket.Options.SetRequestHeader("X-NaWaBa-Guest-Status", "1");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
@@ -542,7 +573,8 @@ public class RemoteInputGateway : MonoBehaviour
                     guestStatusSupported = message.guestStatusSupported;
                     guestConnected = guestStatusSupported && message.guestConnected;
                     helloReceived = true;
-                    Debug.Log("NaWaBa connected (protocol 4), room: " + RoomId, this);
+                    Debug.Log("NaWaBa connected (protocol 5), room: " + RoomId, this);
+                    SendStageStatus();
                     continue;
                 }
                 if (!helloReceived) throw new InvalidOperationException("Missing server hello.");
@@ -655,7 +687,9 @@ public class RemoteInputGateway : MonoBehaviour
                 if (stale) { ReleaseControl("input_timeout"); continue; }
                 if (message.sequence < 0 || float.IsNaN(message.x) || float.IsNaN(message.y) ||
                     float.IsInfinity(message.x) || float.IsInfinity(message.y) ||
-                    Mathf.Abs(message.x) > 1 || Mathf.Abs(message.y) > 1)
+                    Mathf.Abs(message.x) > 1 || Mathf.Abs(message.y) > 1 ||
+                    message.jump < 0 || float.IsNaN(message.look) || float.IsInfinity(message.look) ||
+                    Mathf.Abs(message.look) > 1)
                     throw new InvalidOperationException("Invalid input.");
                 if (message.sequence <= lastSequence) continue;
                 lastSequence = message.sequence;
@@ -672,7 +706,8 @@ public class RemoteInputGateway : MonoBehaviour
                 !remoteInputSource.isActiveAndEnabled))
                 ReclaimControl();
             if (latest != null && controlling && CurrentGrant(latest))
-                remoteInputSource.SetMoveInput(new Vector2(latest.x, latest.y), ClockNow() - receivedAt);
+                remoteInputSource.SetInput(new Vector2(latest.x, latest.y), latest.look, latest.jump,
+                    ClockNow() - receivedAt);
         }
         catch (Exception error)
         {

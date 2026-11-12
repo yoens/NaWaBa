@@ -4,7 +4,7 @@ using UnityEngine.UI;
 
 // Disable simulation before ordinary actors/spawners get their first Update.
 [DefaultExecutionOrder(-100)]
-public class DodgeStageController : MonoBehaviour
+public class DodgeStageController : MonoBehaviour, IStageFlow
 {
     [Header("Connections")]
     [SerializeField] private ActorController actorController;
@@ -18,6 +18,15 @@ public class DodgeStageController : MonoBehaviour
     [Header("Rules")]
     [SerializeField, Min(1f)] private float surviveDuration = 20f;
 
+    [Header("Flow")]
+    // 클리어하면 이 씬으로 자동 이동합니다. 비워 두면 RETRY만 가능합니다.
+    [SerializeField] private string nextStageSceneName = "Stage_Climb";
+    [SerializeField, Min(0f)] private float nextStageDelay = 3f;
+
+    private const string StageId = "dodge";
+    private const string StageName = "1 · 눈덩이 피하기";
+    private const string StageControls = "move";
+
     private enum StageState
     {
         Ready,
@@ -26,7 +35,8 @@ public class DodgeStageController : MonoBehaviour
         PlayingRemote,
         Cleared,
         Failed,
-        Cancelled
+        Cancelled,
+        Advancing
     }
 
     private StageState state;
@@ -36,6 +46,7 @@ public class DodgeStageController : MonoBehaviour
     private Quaternion startRotation;
     private float remainingTime;
     private float roundStartedAt;
+    private float advanceAt;
     private bool initialized;
     private bool usesPersistentGateway;
     private RemoteInputSource stageRemoteInputSource;
@@ -103,7 +114,8 @@ public class DodgeStageController : MonoBehaviour
     private void OnEnable()
     {
         if (!initialized) return;
-        if (usesPersistentGateway && !gateway.BindStageInputs(inputRouter, stageRemoteInputSource))
+        if (usesPersistentGateway && !gateway.BindStageInputs(inputRouter, stageRemoteInputSource,
+                StageId, StageName, StageControls))
         {
             Debug.LogError("DodgeStageController: could not bind the stage input targets.", this);
             enabled = false;
@@ -162,6 +174,11 @@ public class DodgeStageController : MonoBehaviour
 
         if (state == StageState.PreparingRemote)
             statusText.text = gateway.ControlState;
+        if (state == StageState.Advancing)
+        {
+            UpdateAdvance();
+            return;
+        }
         if (!IsPlaying) return;
 
         if (state == StageState.PlayingRemote &&
@@ -281,8 +298,36 @@ public class DodgeStageController : MonoBehaviour
 
         statusText.text = result == StageState.Cleared ? "CLEAR!" :
             result == StageState.Failed ? "FAILED" : "CANCELLED";
-        RefreshAvailability();
         Debug.Log("[Dodge] " + statusText.text, this);
+
+        // 클리어하면 잠시 결과를 보여준 뒤 다음 스테이지로 이동합니다.
+        // Advancing 동안은 새 참가 승인과 RETRY를 막습니다.
+        if (result == StageState.Cleared && StageSceneLoader.CanLoad(nextStageSceneName))
+        {
+            state = StageState.Advancing;
+            advanceAt = Time.time + nextStageDelay;
+            UpdateAdvance();
+        }
+        RefreshAvailability();
+    }
+
+    private void UpdateAdvance()
+    {
+        float remaining = advanceAt - Time.time;
+        if (remaining > 0f)
+        {
+            statusText.text = $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(remaining)}";
+            return;
+        }
+
+        statusText.text = "LOADING...";
+        if (!StageSceneLoader.Load(nextStageSceneName, this, this))
+        {
+            // 이동에 실패하면 이 스테이지에서 다시 도전할 수 있게 둡니다.
+            state = StageState.Cleared;
+            statusText.text = "CLEAR!";
+            RefreshAvailability();
+        }
     }
 
     private void RefreshTimeText()

@@ -1,31 +1,40 @@
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 public class StageNavigation : MonoBehaviour
 {
     [SerializeField] private string lobbySceneName = "Lobby";
-    [SerializeField] private DodgeStageController stageController;
 
-    private bool loading;
+    // Any stage controller implementing IStageFlow (Dodge, Climb, ...).
+    // The existing DodgeStageController reference is kept by this field name.
+    // Left empty, the stage controller in this scene is found automatically.
+    [SerializeField] private MonoBehaviour stageController;
 
     public void ReturnToLobby()
     {
-        if (!Application.isPlaying || loading) return;
+        if (!Application.isPlaying) return;
 
-        if (string.IsNullOrWhiteSpace(lobbySceneName) ||
-            !Application.CanStreamedLevelBeLoaded(lobbySceneName))
+        IStageFlow flow = stageController as IStageFlow;
+        if (flow == null) flow = FindStageInScene();
+        if (flow == null)
         {
-            Debug.LogError("Build Profiles의 Scene List에 Lobby 씬을 추가해주세요.", this);
-            return;
-        }
-        if (stageController == null)
-        {
-            Debug.LogError("StageNavigation: assign the stage's DodgeStageController.", this);
+            Debug.LogError("StageNavigation: 이 씬에 IStageFlow 스테이지 컨트롤러가 없습니다.", this);
             return;
         }
 
-        loading = true;
-        stageController.PrepareToLeave();
-        SceneManager.LoadSceneAsync(lobbySceneName, LoadSceneMode.Single);
+        StageSceneLoader.Load(lobbySceneName, flow, this);
+    }
+
+    private IStageFlow FindStageInScene()
+    {
+        foreach (MonoBehaviour behaviour in
+                 FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
+        {
+            if (behaviour is IStageFlow flow && behaviour.gameObject.scene == gameObject.scene)
+            {
+                stageController = behaviour;
+                return flow;
+            }
+        }
+        return null;
     }
 }

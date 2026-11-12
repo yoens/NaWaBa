@@ -31,6 +31,31 @@ public class InputRouter : MonoBehaviour
         return localInputSource.ReadMove();
     }
 
+    // Update에서 호출하세요. 현재 조작자가 이번 프레임에 점프를 눌렀으면 true입니다.
+    public bool ConsumeJump()
+    {
+        if (useRemoteInput)
+        {
+            return remoteInputSource != null &&
+                remoteInputSource.isActiveAndEnabled &&
+                remoteInputSource.ConsumeJump();
+        }
+
+        return localInputSource != null &&
+            localInputSource.isActiveAndEnabled &&
+            localInputSource.ReadJumpPressed();
+    }
+
+    // 원격 조작자의 카메라 좌우 회전(-1~1). 로컬은 마우스를 사용하므로 0입니다.
+    public float ReadLook()
+    {
+        if (!useRemoteInput || remoteInputSource == null ||
+            !remoteInputSource.isActiveAndEnabled)
+            return 0f;
+
+        return remoteInputSource.ReadLook();
+    }
+
     [ContextMenu("Control/Use Remote Input")]
     public void UseRemoteInput()
     {

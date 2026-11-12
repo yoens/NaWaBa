@@ -32,4 +32,14 @@ public class LocalInputSource : MonoBehaviour
         // 대각선 입력의 길이가 1을 넘지 않도록 제한합니다.
         return Vector2.ClampMagnitude(new Vector2(x, y), 1f);
     }
+
+    // Update에서만 호출하세요. 이번 프레임에 Space를 눌렀는지 반환합니다.
+    public bool ReadJumpPressed()
+    {
+        if (!Application.isFocused)
+            return false;
+
+        Keyboard keyboard = Keyboard.current;
+        return keyboard != null && keyboard.spaceKey.wasPressedThisFrame;
+    }
 }

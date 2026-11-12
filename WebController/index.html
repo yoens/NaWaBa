@@ -29,6 +29,10 @@
         .pad button { margin: 0; touch-action: none; user-select: none; }
         .pad button[data-key="KeyW"] { grid-column: 2; }
         .pad button[data-key="KeyA"] { grid-column: 1; }
+        .extra { display: flex; gap: 8px; justify-content: center; margin-top: 8px; flex-wrap: wrap; }
+        .extra button { margin: 0; touch-action: none; user-select: none; min-width: 72px; }
+        #stage { display: inline-block; margin: 0 0 12px; padding: 4px 12px; border-radius: 999px;
+            background: #263e52; border: 1px solid #7393ad; font-weight: bold; }
         #resultPanel { margin: 16px 0; padding: 18px; border: 1px solid #7393ad;
             border-left: 5px solid #7393ad; border-radius: 8px; background: #203040; }
         #resultPanel[data-kind="success"] { border-left-color: #75dfaa; }
@@ -41,6 +45,7 @@
 </head>
 <body>
     <h1>NaWaBa 원격 플레이</h1>
+    <p id="stage" role="status">현재 스테이지 확인 중…</p>
     <p>조작을 신청하면 호스트 승인 후 게임 영상이 연결됩니다. 화면이 표시된 뒤 3초 후 시작합니다.</p>
     <label for="nickname">닉네임 (1~20자)</label>
     <input id="nickname" maxlength="20" autocomplete="off" placeholder="예: Yeonsu">
@@ -67,8 +72,14 @@
         <button data-key="KeyS" disabled aria-label="뒤로">▼</button>
         <button data-key="KeyD" disabled aria-label="오른쪽">▶</button>
     </div>
+    <div class="extra">
+        <button data-key="KeyQ" data-control="look" disabled hidden aria-label="카메라 왼쪽 회전">⟲ Q</button>
+        <button data-key="Space" data-control="jump" disabled hidden aria-label="점프">점프 Space</button>
+        <button data-key="KeyE" data-control="look" disabled hidden aria-label="카메라 오른쪽 회전">E ⟳</button>
+    </div>
     <p id="input">x=0, y=0</p>
-    <p class="hint">WASD 또는 방향키로 조작합니다. 조작 중 다른 창·탭으로 이동하면 권한을 반환합니다.
+    <p id="controlsHint" class="hint">WASD 또는 방향키로 이동합니다.</p>
+    <p class="hint">조작 중 다른 창·탭으로 이동하면 권한을 반환합니다.
         다시 조작하려면 새로 신청하세요. 영상 연결이 60초 안에 완료되지 않으면 취소됩니다.</p>
     <script src="/room-video.js"></script>
     <script>
@@ -78,7 +89,9 @@
         const requestButton = document.getElementById("request");
         const requestStatus = document.getElementById("requestStatus");
         const videoOverlay = document.getElementById("videoOverlay");
-        const directionButtons = Array.from(document.querySelectorAll(".pad button"));
+        const directionButtons = Array.from(document.querySelectorAll(".pad button, .extra button"));
+        const stageText = document.getElementById("stage");
+        const controlsHint = document.getElementById("controlsHint");
         const pointers = new Map();
         const stopButton = document.getElementById("stop");
         const statusText = document.getElementById("status");
@@ -99,10 +112,37 @@
         document.getElementById("room").textContent = `방: ${roomId.slice(0, 8)}`;
         const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/controller`);
         socket.addEventListener("open", () => {
-            socket.send(JSON.stringify({ protocolVersion: 4, type: "join", roomId, joinKey }));
+            socket.send(JSON.stringify({ protocolVersion: 5, type: "join", roomId, joinKey }));
         });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
+        const lookKeys = new Set(["KeyQ", "KeyE"]);
+        let stageControls = new Set(["move"]);
+        let jumpCount = 0;
+        function handledKey(code) {
+            return moveKeys.has(code) ||
+                (code === "Space" && stageControls.has("jump")) ||
+                (lookKeys.has(code) && stageControls.has("look"));
+        }
+        function applyStage(message) {
+            const id = typeof message.stageId === "string" ? message.stageId : "";
+            const name = typeof message.stageName === "string" ? message.stageName : "";
+            stageControls = new Set(String(message.controls || "").split(",").filter(Boolean));
+            stageText.textContent = id === "lobby" ? "호스트가 대기실에 있습니다" :
+                id === "loading" ? "다음 화면으로 이동 중…" :
+                `현재 스테이지: ${name || id}`;
+            const parts = ["WASD 또는 방향키로 이동"];
+            if (stageControls.has("jump")) parts.push("Space 점프");
+            if (stageControls.has("look")) parts.push("Q/E 카메라 회전");
+            controlsHint.textContent = parts.join(" · ") + "합니다.";
+            for (const button of directionButtons) {
+                const control = button.dataset.control;
+                if (control) button.hidden = !stageControls.has(control);
+            }
+            if (phase === "idle" && !lastResult)
+                videoOverlay.textContent = id === "lobby" || id === "loading"
+                    ? "호스트가 스테이지를 시작하면 신청할 수 있습니다." : "호스트 승인 대기";
+        }
         let connected = false;
         let hostOnline = false;
         let controllerId = "";
@@ -122,8 +162,8 @@
             onStatus: text => { statusText.textContent = text; }
         });
         const reasons = {
-            round_cleared: "제한 시간 동안 살아남았습니다. 스테이지 클리어!",
-            round_failed: "총알에 맞았습니다. 다시 도전해 보세요.",
+            round_cleared: "스테이지 클리어! 호스트가 다음 스테이지로 이동합니다.",
+            round_failed: "실패했습니다. 다시 도전해 보세요.",
             host_reclaimed: "호스트가 조작 권한을 회수했습니다.",
             controller_stopped: "조작을 중지했습니다.",
             controller_disconnected: "참가자 연결이 종료되었습니다.",
@@ -182,6 +222,7 @@
             grantId = "";
             keys.clear();
             sequence = 0;
+            jumpCount = 0;
             countdownEndsAt = 0;
             inputText.textContent = "x=0, y=0";
             renderButtons();
@@ -196,7 +237,7 @@
                 socket.close();
                 return false;
             }
-            socket.send(JSON.stringify({ ...extra, protocolVersion: 4, roomId, type }));
+            socket.send(JSON.stringify({ ...extra, protocolVersion: 5, roomId, type }));
             return true;
         }
         function identity() { return { controllerId, requestId, grantId }; }
@@ -219,9 +260,16 @@
             const forward = down("KeyW") || down("ArrowUp");
             const x = Number(right) - Number(left);
             const y = Number(forward) - Number(back);
-            if (send("input", { ...identity(), sequence: ++sequence, x, y })) {
-                inputText.textContent = `x=${x}, y=${y} / 전송 번호: ${sequence}`;
+            const look = stageControls.has("look") ? Number(down("KeyE")) - Number(down("KeyQ")) : 0;
+            // Jump is a cumulative press count: a dropped packet cannot lose or repeat a jump.
+            if (send("input", { ...identity(), sequence: ++sequence, x, y, jump: jumpCount, look })) {
+                inputText.textContent = `x=${x}, y=${y}, 점프=${jumpCount}, 시점=${look} / 전송 번호: ${sequence}`;
             }
+        }
+        function pressJump() {
+            if (phase !== "active" || !stageControls.has("jump")) return;
+            jumpCount++;
+            sendInput();
         }
         function stopControl(reason) {
             const previous = identity();
@@ -261,7 +309,7 @@
             let message;
             try {
                 message = JSON.parse(event.data);
-                if (!message || message.protocolVersion !== 4 || message.roomId !== roomId) throw new Error();
+                if (!message || message.protocolVersion !== 5 || message.roomId !== roomId) throw new Error();
             } catch {
                 connected = false;
                 clearControl();
@@ -276,6 +324,10 @@
                 hostOnline = message.hostOnline;
                 requestStatus.textContent = hostOnline ? "닉네임을 입력하고 조작을 신청하세요." : "Unity 연결을 기다리는 중입니다.";
                 renderButtons();
+                return;
+            }
+            if (message.type === "stage_status") {
+                applyStage(message);
                 return;
             }
             if (message.type === "host_status") {
@@ -332,7 +384,11 @@
                 countdownEndsAt = 0;
                 videoOverlay.textContent = "";
                 phase = "active";
-                statusText.textContent = "조작 중 · WASD / 방향키";
+                jumpCount = 0;
+                // Space on a focused button would click it (e.g. 조작 중지).
+                if (document.activeElement && document.activeElement !== document.body)
+                    document.activeElement.blur();
+                statusText.textContent = "조작 중 · " + controlsHint.textContent;
                 renderButtons();
                 sendInput();
                 return;
@@ -380,15 +436,17 @@
         retryRequestButton.addEventListener("click", requestControl);
         stopButton.addEventListener("click", () => stopControl("조작 중지 · 권한을 반환했습니다."));
         window.addEventListener("keydown", event => {
-            if (!["starting", "active"].includes(phase) || !moveKeys.has(event.code)) return;
+            if (!["starting", "active"].includes(phase) || !handledKey(event.code)) return;
             event.preventDefault();
             if (event.repeat) return;
+            if (event.code === "Space") { pressJump(); return; }
             keys.add(event.code);
             sendInput();
         });
         window.addEventListener("keyup", event => {
-            if (!["starting", "active"].includes(phase) || !moveKeys.has(event.code)) return;
+            if (!["starting", "active"].includes(phase) || !handledKey(event.code)) return;
             event.preventDefault();
+            if (event.code === "Space") return;
             keys.delete(event.code);
             sendInput();
         });
@@ -396,6 +454,7 @@
             button.addEventListener("pointerdown", event => {
                 if (phase !== "active") return;
                 event.preventDefault();
+                if (button.dataset.key === "Space") { pressJump(); return; }
                 button.setPointerCapture(event.pointerId);
                 pointers.set(event.pointerId, button.dataset.key);
                 sendInput();

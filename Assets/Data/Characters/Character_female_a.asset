@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d9c54035c7bcfef41bbbb99c19f5eeac, type: 3}
+  m_Name: Character_female_a
+  m_EditorClassIdentifier: Assembly-CSharp::CharacterDefinition
+  characterId: female_a
+  displayName: FEMALE_A
+  visualPrefab: {fileID: 4410944789442030064, guid: a59f07b0fa258824b86c1a6b94f13fb8, type: 3}

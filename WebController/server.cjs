@@ -6,11 +6,11 @@ const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
 
-// Protocol 4: update server.cjs, index.html and RemoteInputGateway.cs together.
+// Protocol 5: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
 // room after authentication. This in-memory registry is for ONE server process.
 function createApplication(options = {}) {
-    const PROTOCOL = 4;
+    const PROTOCOL = 5;
     const { hostKey } = options;
     const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
     if (!validKey(hostKey)) throw new Error("A 32-byte host key is required.");
@@ -166,7 +166,7 @@ function createApplication(options = {}) {
                 return;
             }
             if (request.headers["x-nawaba-protocol"] !== String(PROTOCOL)) {
-                socket.close(1008, "Update Unity client to protocol 4");
+                socket.close(1008, "Update Unity client to protocol 5");
                 return;
             }
             if (rooms.size >= maxRooms) { socket.close(1013, "Room limit reached"); return; }
@@ -176,6 +176,7 @@ function createApplication(options = {}) {
             do { joinKey = randomBytes(32).toString("hex"); } while (joinKey === hostKey);
             const room = { id, joinKey, host: socket, controller: null,
                 pending: null, grant: null, closed: false,
+                stage: { stageId: "lobby", stageName: "", controls: "" },
                 reportGuestStatus: request.headers["x-nawaba-guest-status"] === "1" };
             rooms.set(id, room);
             send(room, socket, { type: "host_hello", inviteUrl: `${origin()}/#room=${id}&join=${joinKey}`,
@@ -208,6 +209,20 @@ function createApplication(options = {}) {
                 }
                 if (message.type === "video_failed") {
                     if (matchesGrant(room, message)) revoke(room, "video_failed");
+                    return;
+                }
+                if (message.type === "stage_status") {
+                    // Display-only: which stage the host is on and which web buttons apply.
+                    const stageId = message.stageId;
+                    const stageName = typeof message.stageName === "string" ? message.stageName : "";
+                    const controls = typeof message.controls === "string" ? message.controls : "";
+                    if (typeof stageId !== "string" || !/^[a-z0-9_-]{1,32}$/.test(stageId) ||
+                        stageName.length > 40 || !/^[a-z,]{0,40}$/.test(controls)) {
+                        socket.close(1008, "Invalid stage status");
+                        return;
+                    }
+                    room.stage = { stageId, stageName, controls };
+                    send(room, room.controller, { type: "stage_status", ...room.stage });
                     return;
                 }
                 if (message.type === "revoke_control") {
@@ -255,6 +270,7 @@ function createApplication(options = {}) {
             room.controller = socket;
             const controllerId = randomUUID();
             send(room, socket, { type: "controller_hello", controllerId, hostOnline: true });
+            send(room, socket, { type: "stage_status", ...room.stage });
             notifyGuestStatus(room, true);
             log(`[room ${room.id}] guest connected`);
             socket.on("message", (data, binary) => {
@@ -316,9 +332,13 @@ function createApplication(options = {}) {
                 }
                 if (message.type !== "input") { socket.close(1008, "Invalid controller message"); return; }
                 if (!matchesGrant(room, message) || !room.grant.active || room.grant.controllerId !== controllerId) return;
+                const jump = message.jump ?? 0;
+                const look = message.look ?? 0;
                 if (!Number.isSafeInteger(message.sequence) || message.sequence < 0 ||
                     !Number.isFinite(message.x) || !Number.isFinite(message.y) ||
-                    Math.abs(message.x) > 1 || Math.abs(message.y) > 1) {
+                    Math.abs(message.x) > 1 || Math.abs(message.y) > 1 ||
+                    !Number.isSafeInteger(jump) || jump < 0 || jump > 1000000 ||
+                    !Number.isFinite(look) || Math.abs(look) > 1) {
                     revoke(room, "invalid_input");
                     socket.close(1008, "Invalid input");
                     return;
@@ -327,7 +347,7 @@ function createApplication(options = {}) {
                 room.grant.lastSequence = message.sequence;
                 room.grant.lastInputAt = performance.now();
                 if (!send(room, room.host, { type: "input", ...ids(room.grant),
-                    sequence: message.sequence, x: message.x, y: message.y })) revoke(room, "host_disconnected");
+                    sequence: message.sequence, x: message.x, y: message.y, jump, look })) revoke(room, "host_disconnected");
             });
             socket.on("close", () => {
                 if (room.closed || room.controller !== socket) return;
@@ -380,7 +400,7 @@ if (require.main === module) {
         const config = readServerConfig();
         const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
-            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 4)`);
+            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 5)`);
             console.log("Guest status notifications enabled for supported Unity clients.");
             console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });
