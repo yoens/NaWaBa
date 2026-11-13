@@ -51,14 +51,7 @@ public class RemoteInputGateway : MonoBehaviour
         if (!managedLobbySession || inputRouter != expectedRouter) return;
         AllowRemoteApproval = false;
         ReclaimControl();
-        if (!string.IsNullOrEmpty(PendingRequestId))
-        {
-            Queue(new Message {
-                type = "revoke_control", controllerId = PendingControllerId,
-                requestId = PendingRequestId
-            });
-        }
-        ClearPendingRequest();
+        // The request list belongs to the room, not the scene: it survives stage changes.
         if (remoteInputSource != null) remoteInputSource.ClearInput();
         if (inputRouter != null) inputRouter.UseLocalInput();
         remoteInputSource = null;
@@ -145,7 +138,7 @@ public class RemoteInputGateway : MonoBehaviour
         return true;
     }
 
-    private const int ProtocolVersion = 6;
+    private const int ProtocolVersion = 7;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
     private Session session;
@@ -209,6 +202,20 @@ public class RemoteInputGateway : MonoBehaviour
     public string PendingRequestId { get; private set; } = "";
     public string PendingNickname { get; private set; } = "";
     public bool HasPendingRequest => IsConnected && authority == null && PendingRequestId.Length > 0;
+
+    // Server-ordered request list (front = the one Approve will grant).
+    private const int MaxQueueEntries = 64;
+    private string[] queueNames = Array.Empty<string>();
+    public int QueueCount => IsConnected ? queueNames.Length : 0;
+    public string QueueSummary
+    {
+        get
+        {
+            if (QueueCount == 0) return "-";
+            string front = queueNames[0];
+            return QueueCount == 1 ? front : $"{front} (+{QueueCount - 1})";
+        }
+    }
     public bool HasAuthority => authority != null;
     public bool IsControlling => controlling;
 
@@ -287,6 +294,15 @@ public class RemoteInputGateway : MonoBehaviour
         public string stageId;
         public string stageName;
         public string controls;
+        public QueueEntry[] queue;   // queue_status: waiting requests, front first
+    }
+
+    [Serializable]
+    private class QueueEntry
+    {
+        public string controllerId;
+        public string requestId;
+        public string nickname;
     }
 
     private class Packet
@@ -314,6 +330,16 @@ public class RemoteInputGateway : MonoBehaviour
         PendingControllerId = "";
         PendingRequestId = "";
         PendingNickname = "";
+        queueNames = Array.Empty<string>();
+    }
+
+    // Host-side "remove from list" for the front request (e.g. someone who is away).
+    public void RemoveFrontRequest()
+    {
+        if (!IsConnected || string.IsNullOrEmpty(PendingRequestId)) return;
+        Queue(new Message {
+            type = "remove_request", controllerId = PendingControllerId, requestId = PendingRequestId
+        });
     }
 
     private void ClearAuthority()
@@ -400,7 +426,7 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
-                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "6");
+                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "7");
                 socket.Options.SetRequestHeader("X-NaWaBa-Guest-Status", "1");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
@@ -499,7 +525,9 @@ public class RemoteInputGateway : MonoBehaviour
             type = "approve_control", controllerId = authority.controllerId,
             requestId = authority.requestId
         };
-        ClearPendingRequest();
+        PendingControllerId = "";
+        PendingRequestId = "";
+        PendingNickname = "";
         if (!Queue(approval))
         {
             ClearAuthority();
@@ -579,7 +607,7 @@ public class RemoteInputGateway : MonoBehaviour
                     guestConnected = guestStatusSupported && message.guestConnected;
                     participantCount = guestConnected ? Mathf.Max(0, message.participantCount) : 0;
                     helloReceived = true;
-                    Debug.Log("NaWaBa connected (protocol 6), room: " + RoomId, this);
+                    Debug.Log("NaWaBa connected (protocol 7), room: " + RoomId, this);
                     SendStageStatus();
                     continue;
                 }
@@ -604,24 +632,27 @@ public class RemoteInputGateway : MonoBehaviour
                     }
                     continue;
                 }
-                if (message.type == "control_request")
+                if (message.type == "queue_status")
                 {
-                    if (string.IsNullOrEmpty(message.controllerId) || string.IsNullOrEmpty(message.requestId) ||
-                        string.IsNullOrWhiteSpace(message.nickname) || message.nickname.Length > 20)
-                        throw new InvalidOperationException("Invalid control request.");
-                    if (authority != null) continue;
-                    if (stale)
+                    // A full snapshot of the waiting list; the newest one always wins, so a
+                    // scene-loading delay cannot apply an outdated front entry.
+                    QueueEntry[] entries = message.queue ?? Array.Empty<QueueEntry>();
+                    if (entries.Length > MaxQueueEntries)
+                        throw new InvalidOperationException("Invalid request list.");
+                    var names = new string[entries.Length];
+                    for (int e = 0; e < entries.Length; e++)
                     {
-                        // A scene-loading hitch must not apply an old request or drop the socket.
-                        Queue(new Message {
-                            type = "revoke_control", controllerId = message.controllerId,
-                            requestId = message.requestId
-                        });
-                        continue;
+                        QueueEntry entry = entries[e];
+                        if (entry == null || string.IsNullOrEmpty(entry.controllerId) ||
+                            string.IsNullOrEmpty(entry.requestId) ||
+                            string.IsNullOrWhiteSpace(entry.nickname) || entry.nickname.Length > 20)
+                            throw new InvalidOperationException("Invalid request list entry.");
+                        names[e] = entry.nickname;
                     }
-                    PendingControllerId = message.controllerId;
-                    PendingRequestId = message.requestId;
-                    PendingNickname = message.nickname;
+                    queueNames = names;
+                    PendingControllerId = entries.Length > 0 ? entries[0].controllerId : "";
+                    PendingRequestId = entries.Length > 0 ? entries[0].requestId : "";
+                    PendingNickname = entries.Length > 0 ? entries[0].nickname : "";
                     continue;
                 }
                 if (message.type == "request_rejected")

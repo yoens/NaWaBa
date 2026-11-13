@@ -6,11 +6,11 @@ const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
 
-// Protocol 6: update server.cjs, index.html and RemoteInputGateway.cs together.
+// Protocol 7: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
 // room after authentication. This in-memory registry is for ONE server process.
 function createApplication(options = {}) {
-    const PROTOCOL = 6;
+    const PROTOCOL = 7;
     const { hostKey } = options;
     const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
     if (!validKey(hostKey)) throw new Error("A 32-byte host key is required.");
@@ -21,7 +21,6 @@ function createApplication(options = {}) {
     const inputTimeout = options.inputTimeout ?? 500;
     const readyTimeout = options.readyTimeout ?? 60000;
     const videoTimeout = options.videoTimeout ?? 1500;
-    const requestTimeout = options.requestTimeout ?? 30000;
     const startDelay = options.startDelay ?? 3000;
     const heartbeatMs = options.heartbeatMs ?? 20000;
     const maxRooms = options.maxRooms ?? 8;
@@ -94,13 +93,25 @@ function createApplication(options = {}) {
         return { controllerId: record.controllerId, requestId: record.requestId,
             grantId: record.grantId || "", nickname: record.nickname };
     }
-    function cancelPending(room, reason) {
-        const previous = room.pending;
-        if (!previous) return;
-        room.pending = null;
-        const message = { type: "request_rejected", ...ids(previous), reason };
-        send(room, room.host, message);
-        send(room, participant(room, previous.controllerId), message);
+    // Request list: first come, first served. Entries stay until approved, cancelled,
+    // removed by the host or their owner leaves; there is no short expiry.
+    function queueIndex(room, controllerId) {
+        return room.queue.findIndex(entry => entry.controllerId === controllerId);
+    }
+    function publishQueue(room) {
+        if (room.closed) return;
+        send(room, room.host, { type: "queue_status", queue: room.queue.map(entry => ids(entry)) });
+        room.queue.forEach((entry, index) => send(room, participant(room, entry.controllerId),
+            { type: "queue_position", ...ids(entry), position: index + 1, total: room.queue.length }));
+    }
+    // Removes one entry. The owner is told why unless they already left.
+    function dropRequest(room, controllerId, reason, tellOwner = true) {
+        const index = queueIndex(room, controllerId);
+        if (index < 0) return false;
+        const [entry] = room.queue.splice(index, 1);
+        if (tellOwner) send(room, participant(room, controllerId), { type: "request_rejected", ...ids(entry), reason });
+        publishQueue(room);
+        return true;
     }
     function revoke(room, reason) {
         const previous = room.grant;
@@ -145,7 +156,9 @@ function createApplication(options = {}) {
         room.closed = true;
         rooms.delete(room.id); // Old invites become invalid immediately.
         room.host = null;
-        cancelPending(room, "host_disconnected");
+        for (const entry of room.queue)
+            send(room, participant(room, entry.controllerId), { type: "request_rejected", ...ids(entry), reason: "host_disconnected" });
+        room.queue = [];
         revoke(room, "host_disconnected");
         broadcast(room, { type: "host_status", hostOnline: false });
         for (const socket of room.participants.values()) socket.close(1000, "Room closed");
@@ -179,7 +192,7 @@ function createApplication(options = {}) {
                 return;
             }
             if (request.headers["x-nawaba-protocol"] !== String(PROTOCOL)) {
-                socket.close(1008, "Update Unity client to protocol 6");
+                socket.close(1008, "Update Unity client to protocol 7");
                 return;
             }
             if (rooms.size >= maxRooms) { socket.close(1013, "Room limit reached"); return; }
@@ -188,7 +201,7 @@ function createApplication(options = {}) {
             let joinKey;
             do { joinKey = randomBytes(32).toString("hex"); } while (joinKey === hostKey);
             const room = { id, joinKey, host: socket, participants: new Map(),
-                pending: null, grant: null, closed: false,
+                queue: [], grant: null, closed: false,
                 stage: { stageId: "lobby", stageName: "", controls: "" },
                 reportGuestStatus: request.headers["x-nawaba-guest-status"] === "1" };
             rooms.set(id, room);
@@ -200,11 +213,20 @@ function createApplication(options = {}) {
                 const message = parse(socket, data, binary, room);
                 if (!message) return;
                 if (message.type === "approve_control") {
-                    const owner = room.pending && participant(room, room.pending.controllerId);
-                    if (!matches(message, room.pending) || room.grant ||
-                        !owner || owner.readyState !== WebSocket.OPEN) return;
-                    const approved = room.pending;
-                    room.pending = null;
+                    // Only the front of the list can be approved; a repeated click finds a new front
+                    // (or none) and is refused, so one approval creates exactly one grant.
+                    const front = room.queue[0];
+                    const owner = front && participant(room, front.controllerId);
+                    if (!matches(message, front) || !owner || owner.readyState !== WebSocket.OPEN) {
+                        send(room, socket, { type: "request_rejected", controllerId: message.controllerId,
+                            requestId: message.requestId, grantId: "", nickname: "", reason: "not_available" });
+                        return;
+                    }
+                    // Approving someone else while a participant controls hands over control:
+                    // the previous controller goes back to watching.
+                    if (room.grant) revoke(room, "replaced");
+                    const approved = room.queue.shift();
+                    publishQueue(room);
                     room.grant = { ...approved, grantId: randomUUID(), active: false,
                         offerSent: false, answerSent: false, lastVideoAt: 0,
                         approvedAt: performance.now(), startAt: null, lastInputAt: 0, lastSequence: -1 };
@@ -251,9 +273,12 @@ function createApplication(options = {}) {
                         if (matchesGrant(room, message)) revoke(room, message.reason);
                         return;
                     }
-                    // requestId also cancels an approval still in transit to Unity.
-                    if (matches(message, room.pending)) cancelPending(room, "host_reclaimed");
                     if (matches(message, room.grant)) revoke(room, "host_reclaimed");
+                    return;
+                }
+                if (message.type === "remove_request") {
+                    const entry = room.queue[queueIndex(room, message.controllerId)];
+                    if (matches(message, entry)) dropRequest(room, entry.controllerId, "host_removed");
                     return;
                 }
                 socket.close(1008, "Invalid host message");
@@ -297,12 +322,8 @@ function createApplication(options = {}) {
                 const message = parse(socket, data, binary, room);
                 if (!message) return;
                 if (message.type === "request_control") {
-                    if (room.pending?.controllerId === controllerId || room.grant?.controllerId === controllerId) return;
-                    // Step 2 keeps one request/grant at a time. The FIFO list arrives in step 3.
-                    if (room.pending || room.grant) {
-                        send(room, socket, { type: "request_rejected", reason: "busy" });
-                        return;
-                    }
+                    // Already waiting or already playing: a second request changes nothing.
+                    if (queueIndex(room, controllerId) >= 0 || room.grant?.controllerId === controllerId) return;
                     const nickname = typeof message.nickname === "string" ? message.nickname.trim() : "";
                     if (!nickname || nickname.length > 20 || !room.host ||
                         room.host.readyState !== WebSocket.OPEN) {
@@ -310,12 +331,10 @@ function createApplication(options = {}) {
                             !nickname || nickname.length > 20 ? "invalid_nickname" : "host_disconnected" });
                         return;
                     }
-                    room.pending = { controllerId, requestId: randomUUID(), nickname, requestedAt: performance.now() };
-                    if (!send(room, room.host, { type: "control_request", ...ids(room.pending) })) {
-                        cancelPending(room, "host_disconnected");
-                        return;
-                    }
-                    send(room, socket, { type: "request_received", ...ids(room.pending) });
+                    const entry = { controllerId, requestId: randomUUID(), nickname, requestedAt: performance.now() };
+                    room.queue.push(entry);
+                    send(room, socket, { type: "request_received", ...ids(entry) });
+                    publishQueue(room);
                     return;
                 }
                 if (message.type === "video_answer") {
@@ -350,8 +369,8 @@ function createApplication(options = {}) {
                     return;
                 }
                 if (message.type === "release_control") {
-                    if (matches(message, room.pending) && room.pending.controllerId === controllerId)
-                        cancelPending(room, "controller_stopped");
+                    const entry = room.queue[queueIndex(room, controllerId)];
+                    if (matches(message, entry)) dropRequest(room, controllerId, "controller_stopped");
                     if (ownsGrant(message)) revoke(room, "controller_stopped");
                     return;
                 }
@@ -378,7 +397,7 @@ function createApplication(options = {}) {
                 if (room.closed || room.participants.get(controllerId) !== socket) return;
                 room.participants.delete(controllerId);
                 // Only this participant's own request or grant ends; the others stay connected.
-                if (room.pending?.controllerId === controllerId) cancelPending(room, "controller_disconnected");
+                dropRequest(room, controllerId, "controller_disconnected", false);
                 if (room.grant?.controllerId === controllerId) revoke(room, "controller_disconnected");
                 notifyParticipants(room);
                 log(`[room ${room.id}] participant left (${room.participants.size})`);
@@ -389,7 +408,6 @@ function createApplication(options = {}) {
     const timer = setInterval(() => {
         const now = performance.now();
         for (const room of rooms.values()) {
-            if (room.pending && now - room.pending.requestedAt >= requestTimeout) cancelPending(room, "request_timeout");
             if (room.grant && !room.grant.active && room.grant.startAt === null &&
                 now - room.grant.approvedAt >= readyTimeout) revoke(room, "ready_timeout");
             if (room.grant && room.grant.startAt !== null &&
@@ -427,7 +445,7 @@ if (require.main === module) {
         const config = readServerConfig();
         const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
-            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 6)`);
+            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 7)`);
             console.log("Guest status notifications enabled for supported Unity clients.");
             console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });

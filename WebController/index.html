@@ -121,7 +121,7 @@
         renderRoom();
         const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/controller`);
         socket.addEventListener("open", () => {
-            socket.send(JSON.stringify({ protocolVersion: 6, type: "join", roomId, joinKey }));
+            socket.send(JSON.stringify({ protocolVersion: 7, type: "join", roomId, joinKey }));
         });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
@@ -185,6 +185,8 @@
             input_timeout: "입력 전송이 끊겨 권한을 반환했습니다.",
             invalid_nickname: "닉네임은 1~20자로 입력하세요.",
             busy: "다른 참가자가 신청했거나 조작 중입니다. 잠시 후 다시 신청하세요.",
+            host_removed: "호스트가 신청 목록에서 제외했습니다. 다시 신청할 수 있습니다.",
+            replaced: "호스트가 다른 참가자에게 조작을 넘겼습니다. 다시 신청하면 목록 맨 뒤에 들어갑니다.",
             invalid_input: "올바르지 않은 입력으로 조작이 종료되었습니다."
         };
 
@@ -198,6 +200,8 @@
                 controller_stopped: { kind: "stopped", title: "플레이를 중지했습니다" },
                 request_timeout: { kind: "stopped", title: "참가 신청이 만료되었습니다" },
                 busy: { kind: "stopped", title: "지금은 신청할 수 없습니다" },
+                host_removed: { kind: "stopped", title: "신청 목록에서 제외되었습니다" },
+                replaced: { kind: "stopped", title: "다른 참가자에게 조작이 넘어갔습니다" },
                 ready_timeout: { kind: "connection", title: "영상이 준비되지 않아 시작을 취소했습니다" },
                 invalid_input: { kind: "stopped", title: "입력 오류로 플레이가 종료되었습니다" }
             };
@@ -221,7 +225,8 @@
             retryRequestButton.disabled = requestButton.disabled;
             nicknameInput.disabled = phase !== "idle";
             for (const button of directionButtons) button.disabled = phase !== "active";
-            stopButton.disabled = !connected || !["video", "starting", "active"].includes(phase);
+            stopButton.disabled = !connected || !["pending", "video", "starting", "active"].includes(phase);
+            stopButton.textContent = phase === "pending" ? "신청 취소" : "조작 중지";
         }
         function clearControl() {
             videoReceiver.stop();
@@ -248,7 +253,7 @@
                 socket.close();
                 return false;
             }
-            socket.send(JSON.stringify({ ...extra, protocolVersion: 6, roomId, type }));
+            socket.send(JSON.stringify({ ...extra, protocolVersion: 7, roomId, type }));
             return true;
         }
         function identity() { return { controllerId, requestId, grantId }; }
@@ -320,7 +325,7 @@
             let message;
             try {
                 message = JSON.parse(event.data);
-                if (!message || message.protocolVersion !== 6 || message.roomId !== roomId) throw new Error();
+                if (!message || message.protocolVersion !== 7 || message.roomId !== roomId) throw new Error();
             } catch {
                 connected = false;
                 clearControl();
@@ -344,6 +349,14 @@
                 applyStage(message);
                 return;
             }
+            if (message.type === "queue_position" && phase === "pending" && sameRequest(message)) {
+                const position = message.position, total = message.total;
+                if (!Number.isSafeInteger(position) || position < 1 || !Number.isSafeInteger(total)) return;
+                requestStatus.textContent = position === 1
+                    ? `${message.nickname} · 다음 차례입니다. 호스트 승인을 기다리는 중… (대기 ${total}명)`
+                    : `${message.nickname} · 대기 ${position}번째 · 앞에 ${position - 1}명 (대기 ${total}명)`;
+                return;
+            }
             if (message.type === "room_status") {
                 if (Number.isSafeInteger(message.participantCount) && message.participantCount >= 0) {
                     participantCount = message.participantCount;
@@ -365,7 +378,7 @@
             if (message.type === "request_received" && phase === "requesting" && message.controllerId === controllerId) {
                 requestId = message.requestId;
                 phase = "pending";
-                requestStatus.textContent = `${message.nickname} · 호스트 승인을 기다리는 중…`;
+                requestStatus.textContent = `${message.nickname} · 신청 완료, 순번 확인 중…`;
                 renderButtons();
                 return;
             }
@@ -455,7 +468,16 @@
         }
         requestButton.addEventListener("click", requestControl);
         retryRequestButton.addEventListener("click", requestControl);
-        stopButton.addEventListener("click", () => stopControl("조작 중지 · 권한을 반환했습니다."));
+        function cancelRequest() {
+            const previous = identity();
+            clearControl();
+            send("release_control", previous);
+            requestStatus.textContent = "신청을 취소했습니다. 다시 신청하면 목록 맨 뒤에 들어갑니다.";
+        }
+        stopButton.addEventListener("click", () => {
+            if (phase === "pending") cancelRequest();
+            else stopControl("조작 중지 · 권한을 반환했습니다.");
+        });
         window.addEventListener("keydown", event => {
             if (!["starting", "active"].includes(phase) || !handledKey(event.code)) return;
             event.preventDefault();

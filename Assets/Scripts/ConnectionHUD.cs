@@ -9,6 +9,8 @@ public class ConnectionHUD : MonoBehaviour
     [SerializeField] private TMP_Text statusText;
     [SerializeField] private Button remoteButton;
     [SerializeField] private Button reclaimButton;
+    // Optional: wire a "Remove" button to RemoveFrontRequest() to drop the front request.
+    [SerializeField] private Button removeRequestButton;
 
     private bool IsSinglePlayer => gateway.UsesGameSessionMode &&
         GameSession.Mode == GameMode.SinglePlayer;
@@ -26,6 +28,7 @@ public class ConnectionHUD : MonoBehaviour
         statusText.richText = false;
         remoteButton.gameObject.SetActive(!IsSinglePlayer);
         reclaimButton.gameObject.SetActive(!IsSinglePlayer);
+        if (removeRequestButton != null) removeRequestButton.gameObject.SetActive(!IsSinglePlayer);
         TMP_Text label = remoteButton.GetComponentInChildren<TMP_Text>();
         if (label != null) label.text = "Approve";
         label = reclaimButton.GetComponentInChildren<TMP_Text>();
@@ -45,12 +48,16 @@ public class ConnectionHUD : MonoBehaviour
         string player = string.IsNullOrEmpty(gateway.PlayerName) ? "-" : gateway.PlayerName;
         statusText.text = $"Server: {(gateway.IsConnected ? "CONNECTED" : "DISCONNECTED")} / Room: {gateway.RoomLabel}" +
             $" / Guests: {gateway.ParticipantCount}\n" +
-            $"Mode: {gateway.ControlState}\nPlayer: {player}";
+            $"Mode: {gateway.ControlState}\nPlayer: {player} / Waiting: {gateway.QueueCount} / Next: {gateway.QueueSummary}";
         remoteButton.interactable = gateway.CanApprovePendingRequest;
         reclaimButton.interactable = gateway.HasAuthority;
+        if (removeRequestButton != null)
+            removeRequestButton.interactable = gateway.IsConnected && gateway.QueueCount > 0;
     }
 
     // Preserve the existing button OnClick names and Inspector connections.
     public void EnableRemoteMode() => gateway.ApprovePendingRequest();
     public void ReclaimControl() => gateway.ReclaimControl();
+    // Optional "Remove" button: takes the front request off the list.
+    public void RemoveFrontRequest() => gateway.RemoveFrontRequest();
 }
