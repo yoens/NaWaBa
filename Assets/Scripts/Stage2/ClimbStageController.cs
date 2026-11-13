@@ -35,6 +35,8 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     private bool cleared;
     private string[] resultLines;
     private RemoteInputSource stageRemoteInputSource;
+    private bool useCheckpoints = true;
+    private int checkpointOrder;
     private GUIStyle titleStyle, lineStyle, buttonStyle, labelStyle;
 
     private bool IsSinglePlayer => GameSession.Mode == GameMode.SinglePlayer;
@@ -71,6 +73,15 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             }
         }
 
+        // Difficulty chosen in the lobby: label on the web page, checkpoints on or off.
+        NaWaBaDifficulty difficulty = GameSession.Difficulty;
+        if (difficulty != null)
+        {
+            useCheckpoints = difficulty.UseCheckpoints;
+            if (!string.IsNullOrEmpty(difficulty.WebLabel) && !stageName.Contains("("))
+                stageName = $"{stageName} ({difficulty.WebLabel})";
+        }
+
         if (gateway != null) gateway.AllowRemoteApproval = false;
         handoff = new StageHandoff(usesPersistentGateway ? gateway : null, hostResumeDelay);
         initialized = true;
@@ -82,6 +93,11 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
 
         cleared = false;
         resultLines = null;
+        checkpointOrder = 0;
+        actor.ClearRespawnPoint();
+        foreach (ClimbCheckpoint checkpoint in
+                 FindObjectsByType<ClimbCheckpoint>(FindObjectsSortMode.None))
+            checkpoint.MarkReached(false);
         handoff.Reset();
         actor.InputLocked = false;
         actor.Fell += OnFell;
@@ -191,7 +207,24 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
         if (cleared) return;
         RunRecord.Player player = RunRecord.NoteFall(gateway);
         if (usesPersistentGateway)
-            gateway.ReportRunEvent("fell", $"{player.Name} 추락! 2스테이지 시작점으로 돌아갑니다");
+            gateway.ReportRunEvent("fell", actor.HasCheckpoint
+                ? $"{player.Name} 추락! 체크포인트 {checkpointOrder}에서 다시 시작"
+                : $"{player.Name} 추락! 2스테이지 시작점으로 돌아갑니다");
+    }
+
+    // Called by ClimbCheckpoint when the player lands on it. Returns true when it became
+    // the new respawn point (checkpoints on, and further along than the current one).
+    public bool ReachCheckpoint(ClimbCheckpoint checkpoint, ClimbActorController who)
+    {
+        if (!initialized || cleared || !useCheckpoints || who != actor) return false;
+        if (checkpoint.Order <= checkpointOrder) return false;
+        checkpointOrder = checkpoint.Order;
+        actor.SetRespawnPoint(checkpoint.RespawnPosition, actor.transform.rotation);
+        string who_ = RunRecord.Current(gateway).Name;
+        Debug.Log($"[Climb] checkpoint {checkpointOrder} by {who_}", this);
+        if (usesPersistentGateway)
+            gateway.ReportRunEvent("checkpoint", $"{who_} 체크포인트 {checkpointOrder} 도착!");
+        return true;
     }
 
     // Called by ClimbGoal while the player stands in the goal area. Counts once.

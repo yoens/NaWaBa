@@ -7882,6 +7882,7 @@ MonoBehaviour:
   retryButton: {fileID: 1318260427}
   gateway: {fileID: 257174503}
   inputRouter: {fileID: 257174499}
+  scenery: {fileID: 1996000003}
   surviveDuration: 20
 --- !u!4 &1095778572
 Transform:
@@ -9205,6 +9206,67 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1995375308}
   m_CullTransparentMesh: 1
+--- !u!1 &1996000001
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1996000002}
+  - component: {fileID: 1996000003}
+  m_Layer: 0
+  m_Name: DodgeScenery
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1996000002
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1996000001}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1996000003
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1996000001}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fc9618fe2bba46539795adbf2819d036, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DodgeScenery
+  propPrefabs:
+  - {fileID: 433583910022705056, guid: f07589d6242578644b66aaf44f460e7d, type: 3}
+  - {fileID: 2568388214498478900, guid: 0d07b4a09e431ec41b7a8da88363a76d, type: 3}
+  propsPerSide: 7
+  propSideRange: {x: 13, y: 22}
+  propScaleRange: {x: 3, y: 5}
+  streakCount: 14
+  streakHalfWidth: 9.5
+  streakColor: {r: 1, g: 1, b: 1, a: 0.35}
+  buildSlope: 1
+  slopeColor: {r: 0.86, g: 0.9, b: 0.96, a: 1}
+  scrollSpeed: 3
+  topZ: 17
+  bottomZ: -17
+  showGauge: 1
+  gaugeX: 10.7
+  gaugeLength: 22
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -9223,3 +9285,4 @@ SceneRoots:
   - {fileID: 1845440033}
   - {fileID: 1429248702}
   - {fileID: 539204922}
+  - {fileID: 1996000002}

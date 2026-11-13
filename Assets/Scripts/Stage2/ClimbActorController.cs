@@ -23,6 +23,8 @@ public class ClimbActorController : MonoBehaviour
     private Rigidbody body;
     private Vector3 startPosition;
     private Quaternion startRotation;
+    private Vector3 respawnPosition;
+    private Quaternion respawnRotation;
 
     private bool jumpRequested;
     private float ignoreGroundUntil;
@@ -36,8 +38,27 @@ public class ClimbActorController : MonoBehaviour
     // 원격 조작 준비(영상 연결·카운트다운) 중에는 스테이지가 입력을 잠급니다.
     public bool InputLocked { get; set; }
 
-    // 맵 밖으로 떨어져 시작점으로 돌아갈 때 (기여 기록용).
+    // 맵 밖으로 떨어져 시작점(또는 체크포인트)으로 돌아갈 때 (기여 기록용).
     public event Action Fell;
+
+    // True after a checkpoint was reached: falls return there instead of the start.
+    public bool HasCheckpoint { get; private set; }
+
+    // Called by ClimbCheckpoint. The point is where the player's body will be placed.
+    public void SetRespawnPoint(Vector3 position, Quaternion rotation)
+    {
+        respawnPosition = position;
+        respawnRotation = rotation;
+        HasCheckpoint = true;
+    }
+
+    // Back to the stage start (new run or no checkpoints).
+    public void ClearRespawnPoint()
+    {
+        respawnPosition = startPosition;
+        respawnRotation = startRotation;
+        HasCheckpoint = false;
+    }
 
     // 교대 중 정지: 그 자리에 멈추고(중력 포함), 풀리면 멈추기 직전 속도로 이어서 움직입니다.
     private bool frozen;
@@ -101,6 +122,7 @@ public class ClimbActorController : MonoBehaviour
 
         startPosition = body.position;
         startRotation = body.rotation;
+        ClearRespawnPoint();
 
         // The stage controller runs first and may already have asked for a freeze
         // (a participant carried over from stage 1): apply it now that the body exists.
@@ -239,8 +261,8 @@ public class ClimbActorController : MonoBehaviour
     {
         body.linearVelocity = Vector3.zero;
         body.angularVelocity = Vector3.zero;
-        body.position = startPosition;
-        body.rotation = startRotation;
+        body.position = respawnPosition;
+        body.rotation = respawnRotation;
 
         groundContacts.Clear();
         jumpRequested = false;

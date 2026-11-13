@@ -5,6 +5,8 @@ public class DodgeBulletSpawner : MonoBehaviour
     [SerializeField] private DodgeBullet bulletPrefab;
     [SerializeField, Min(0.1f)] private float spawnInterval = 1f;
     [SerializeField, Min(0f)] private float spawnHalfWidth = 9f;
+    // 0 = use the speed saved on the bullet prefab. Set from the difficulty at stage start.
+    [SerializeField, Min(0f)] private float bulletSpeed = 0f;
 
     private float elapsed;
 
@@ -42,10 +44,19 @@ public class DodgeBulletSpawner : MonoBehaviour
             -spawnHalfWidth,
             spawnHalfWidth);
 
-        Instantiate(
+        DodgeBullet bullet = Instantiate(
             bulletPrefab,
             spawnPosition,
             Quaternion.identity);
+        if (bulletSpeed > 0f) bullet.SetSpeed(bulletSpeed);
+    }
+
+    // Difficulty settings for this run (interval in seconds, half width in metres, speed in m/s).
+    public void ApplySettings(float interval, float halfWidth, float speed)
+    {
+        spawnInterval = Mathf.Max(0.1f, interval);
+        spawnHalfWidth = Mathf.Max(0f, halfWidth);
+        bulletSpeed = Mathf.Max(0f, speed);
     }
     public void ResetSpawnTimer()
     {

@@ -17,8 +17,12 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
     [SerializeField] private Button retryButton;
     [SerializeField] private RemoteInputGateway gateway;
     [SerializeField] private InputRouter inputRouter;
+    // Optional: the "climbing up" scenery. Created automatically when the scene has none.
+    [SerializeField] private DodgeScenery scenery;
 
     [Header("Rules")]
+    // Survive time, snowball rate and speed come from the difficulty chosen in the lobby
+    // (Resources/Difficulty). This value is used only when no difficulty asset exists.
     [SerializeField, Min(1f)] private float surviveDuration = 20f;
     // After a hit the round restarts automatically (RETRY restarts it at once for the host).
     [SerializeField, Min(0f)] private float retryDelay = 2f;
@@ -31,7 +35,7 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
     [SerializeField, Min(0f)] private float nextStageDelay = 3f;
 
     private const string StageId = "dodge";
-    private const string StageName = "1 · 눈덩이 피하기";
+    private const string BaseStageName = "1 · 눈덩이 피하기";
     private const string StageControls = "move";
 
     private enum StageState
@@ -56,6 +60,8 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
     private bool initialized;
     private bool usesPersistentGateway;
     private RemoteInputSource stageRemoteInputSource;
+    private string StageName = BaseStageName;
+    private float summitMeters = 300f;
 
     private bool IsSinglePlayer => gateway != null && gateway.UsesGameSessionMode &&
         GameSession.Mode == GameMode.SinglePlayer;
@@ -105,10 +111,44 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         retryLabel = retryButton.GetComponentInChildren<TMP_Text>();
         handoff = new StageHandoff(usesPersistentGateway ? gateway : null, hostResumeDelay);
 
+        ApplyDifficulty();
+
         // Stage 1 is always the start of a new run (한 판).
         RunRecord.BeginRun();
         initialized = true;
     }
+
+    // The difficulty is fixed for the whole run; retries and handoffs keep it.
+    private void ApplyDifficulty()
+    {
+        NaWaBaDifficulty difficulty = GameSession.Difficulty;
+        if (scenery == null) scenery = FindFirstObjectByType<DodgeScenery>();
+        if (scenery == null)
+        {
+            var sceneryObject = new GameObject("DodgeScenery (auto)");
+            scenery = sceneryObject.AddComponent<DodgeScenery>();
+        }
+        scenery.Running = false;
+        if (difficulty == null)
+        {
+            Debug.LogWarning("DodgeStageController: no difficulty asset in Resources/Difficulty; " +
+                "using the Inspector values.", this);
+            return;
+        }
+
+        surviveDuration = difficulty.SurviveDuration;
+        summitMeters = difficulty.SummitMeters;
+        bulletSpawner.ApplySettings(difficulty.SpawnInterval, difficulty.SpawnHalfWidth,
+            difficulty.SnowballSpeed);
+        scenery.ScrollSpeed = difficulty.ClimbScrollSpeed;
+        if (!string.IsNullOrEmpty(difficulty.WebLabel))
+            StageName = $"{BaseStageName} ({difficulty.WebLabel})";
+        Debug.Log($"[Dodge] difficulty {difficulty.DisplayName}: {surviveDuration:0}s, " +
+            $"every {difficulty.SpawnInterval:0.##}s, speed {difficulty.SnowballSpeed:0.#}", this);
+    }
+
+    private float Altitude => surviveDuration <= 0f ? 0f :
+        Mathf.Clamp01(roundTime / surviveDuration) * summitMeters;
 
     private void Start()
     {
@@ -208,7 +248,9 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
                     ClearRound();
                     break;
                 }
-                statusText.text = $"TIME: {Mathf.CeilToInt(surviveDuration - roundTime)}";
+                scenery.SetProgress(roundTime / surviveDuration, Altitude);
+                statusText.text = $"TIME: {Mathf.CeilToInt(surviveDuration - roundTime)}\n" +
+                    $"ALT {Mathf.RoundToInt(Altitude)}m";
                 break;
 
             case StageState.Failed:
@@ -291,6 +333,7 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         RunRecord.Player player = RunRecord.NoteClear(gateway, StageName);
         StopSimulation();
         ClearBullets();
+        scenery.SetProgress(1f, summitMeters);
         Debug.Log("[Dodge] CLEAR by " + player.Name, this);
         if (Multiplayer)
             gateway.ReportRunEvent("stage_cleared", $"{player.Name}님이 {StageName} 클리어! 다음 스테이지로 이동합니다");
@@ -299,7 +342,7 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         {
             state = StageState.Advancing;
             advanceLeft = nextStageDelay;
-            statusText.text = $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}";
+            statusText.text = $"CLEAR! {Mathf.RoundToInt(summitMeters)}m\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}";
         }
         else
         {
@@ -314,7 +357,7 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         advanceLeft -= deltaTime;
         if (advanceLeft > 0f)
         {
-            statusText.text = $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}";
+            statusText.text = $"CLEAR! {Mathf.RoundToInt(summitMeters)}m\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}";
             return;
         }
 
@@ -353,6 +396,8 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         playerHit.ResetHitState();
         bulletSpawner.ResetSpawnTimer();
         roundTime = 0f;
+        // A failed climb slides back to the foot of the mountain.
+        if (scenery != null) scenery.SetProgress(0f, 0f);
     }
 
     // Runs or freezes the player, the spawner and every bullet together.
@@ -363,11 +408,13 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         actorController.enabled = running;
         bulletSpawner.enabled = running;
         DodgeBullet.Frozen = !running;
+        if (scenery != null) scenery.Running = running;
     }
 
     private void StopSimulation()
     {
         simulationRunning = false;
+        if (scenery != null) scenery.Running = false;
         if (actorController != null) actorController.enabled = false;
         if (bulletSpawner != null) bulletSpawner.enabled = false;
     }

@@ -273,7 +273,7 @@ function createApplication(options = {}) {
                 }
                 if (message.type === "run_event") {
                     // Display-only game events (fail, clear, final result) for every participant.
-                    const kinds = ["failed", "fell", "stage_cleared", "run_result"];
+                    const kinds = ["failed", "fell", "checkpoint", "stage_cleared", "run_result"];
                     const text = typeof message.text === "string" ? message.text : "";
                     const lines = Array.isArray(message.lines) ? message.lines : [];
                     if (!kinds.includes(message.kind) || text.length > 100 || lines.length > 16 ||

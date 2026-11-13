@@ -17,6 +17,14 @@ public class DodgeBullet : MonoBehaviour
         body = GetComponent<Rigidbody>();
     }
 
+    // Faster or slower snowballs for the chosen difficulty. Slow ones live long enough to
+    // leave the screen (the arena is about 30 m long).
+    public void SetSpeed(float speed)
+    {
+        moveSpeed = Mathf.Max(0.1f, speed);
+        lifeTime = Mathf.Max(lifeTime, 34f / moveSpeed);
+    }
+
     private void FixedUpdate()
     {
         if (Frozen) return;
