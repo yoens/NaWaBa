@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -35,6 +36,40 @@ public class ClimbActorController : MonoBehaviour
     // 원격 조작 준비(영상 연결·카운트다운) 중에는 스테이지가 입력을 잠급니다.
     public bool InputLocked { get; set; }
 
+    // 맵 밖으로 떨어져 시작점으로 돌아갈 때 (기여 기록용).
+    public event Action Fell;
+
+    // 교대 중 정지: 그 자리에 멈추고(중력 포함), 풀리면 멈추기 직전 속도로 이어서 움직입니다.
+    private bool frozen;
+    private bool frozenWasKinematic;
+    private Vector3 frozenVelocity;
+    public bool Frozen
+    {
+        get => frozen;
+        set
+        {
+            if (frozen == value || body == null) { frozen = value; return; }
+            frozen = value;
+            if (value)
+            {
+                frozenWasKinematic = body.isKinematic;
+                frozenVelocity = body.isKinematic ? Vector3.zero : body.linearVelocity;
+                if (!body.isKinematic)
+                {
+                    body.linearVelocity = Vector3.zero;
+                    body.angularVelocity = Vector3.zero;
+                }
+                body.isKinematic = true;
+                jumpRequested = false;
+            }
+            else
+            {
+                body.isKinematic = frozenWasKinematic;
+                if (!body.isKinematic) body.linearVelocity = frozenVelocity;
+            }
+        }
+    }
+
     // 원격 조작자는 호스트 창의 포커스·마우스 잠금과 무관하게 조작합니다.
     private bool RemoteActive =>
         inputRouter.isActiveAndEnabled &&
@@ -48,7 +83,7 @@ public class ClimbActorController : MonoBehaviour
         climbCamera.isActiveAndEnabled;
 
     private bool CanControl =>
-        !InputLocked && (RemoteActive || LocalActive);
+        !InputLocked && !frozen && (RemoteActive || LocalActive);
 
     private void Awake()
     {
@@ -66,6 +101,14 @@ public class ClimbActorController : MonoBehaviour
 
         startPosition = body.position;
         startRotation = body.rotation;
+
+        // The stage controller runs first and may already have asked for a freeze
+        // (a participant carried over from stage 1): apply it now that the body exists.
+        if (frozen)
+        {
+            frozen = false;
+            Frozen = true;
+        }
     }
 
     private void Start()
@@ -92,10 +135,12 @@ public class ClimbActorController : MonoBehaviour
     {
         bool wantsJump = jumpRequested;
         jumpRequested = false;
+        if (frozen) return;
 
         if (body.position.y < fallResetY)
         {
             ResetPosition();
+            Fell?.Invoke();
             return;
         }
 
@@ -204,6 +249,7 @@ public class ClimbActorController : MonoBehaviour
 
     private void OnDisable()
     {
+        Frozen = false;
         InputLocked = false;
         jumpRequested = false;
         groundContacts.Clear();

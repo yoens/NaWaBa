@@ -2,7 +2,10 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-// Disable simulation before ordinary actors/spawners get their first Update.
+// Stage 1: survive the falling snowballs for surviveDuration seconds.
+// Control can change hands at any time: the round freezes (time, bullets, player) during the
+// handoff and resumes where it was. A failure restarts stage 1 with the same controller.
+// Clearing moves to stage 2 and a remote controller keeps their turn.
 [DefaultExecutionOrder(-100)]
 public class DodgeStageController : MonoBehaviour, IStageFlow
 {
@@ -17,6 +20,10 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
 
     [Header("Rules")]
     [SerializeField, Min(1f)] private float surviveDuration = 20f;
+    // After a hit the round restarts automatically (RETRY restarts it at once for the host).
+    [SerializeField, Min(0f)] private float retryDelay = 2f;
+    // Short countdown before the host's keys take over again after a remote turn.
+    [SerializeField, Min(0f)] private float hostResumeDelay = 1.5f;
 
     [Header("Flow")]
     // 클리어하면 이 씬으로 자동 이동합니다. 비워 두면 RETRY만 가능합니다.
@@ -29,24 +36,23 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
 
     private enum StageState
     {
-        Ready,
-        PreparingRemote,
-        PlayingLocal,
-        PlayingRemote,
-        Cleared,
-        Failed,
-        Cancelled,
-        Advancing
+        Ready,      // no round yet (multiplayer waits for START or an approved participant)
+        Playing,    // round running (may be paused for a handoff)
+        Failed,     // hit; restarting after retryDelay
+        Cleared,    // survived, but there is no next stage to load
+        Advancing   // survived; loading the next stage
     }
 
     private StageState state;
+    private StageHandoff handoff;
     private Rigidbody playerBody;
     private TMP_Text retryLabel;
     private Vector3 startPosition;
     private Quaternion startRotation;
-    private float remainingTime;
-    private float roundStartedAt;
-    private float advanceAt;
+    private float roundTime;
+    private float retryLeft;
+    private float advanceLeft;
+    private bool simulationRunning;
     private bool initialized;
     private bool usesPersistentGateway;
     private RemoteInputSource stageRemoteInputSource;
@@ -54,12 +60,7 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
     private bool IsSinglePlayer => gateway != null && gateway.UsesGameSessionMode &&
         GameSession.Mode == GameMode.SinglePlayer;
 
-    private bool IsPlaying => state == StageState.PlayingLocal ||
-        state == StageState.PlayingRemote;
-
-    private bool CanStartAttempt => initialized && isActiveAndEnabled &&
-        (state == StageState.Ready || state == StageState.Cleared ||
-         state == StageState.Failed || state == StageState.Cancelled);
+    private bool Multiplayer => usesPersistentGateway;
 
     private void Awake()
     {
@@ -102,13 +103,17 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
         startPosition = playerBody.position;
         startRotation = playerBody.rotation;
         retryLabel = retryButton.GetComponentInChildren<TMP_Text>();
+        handoff = new StageHandoff(usesPersistentGateway ? gateway : null, hostResumeDelay);
+
+        // Stage 1 is always the start of a new run (한 판).
+        RunRecord.BeginRun();
         initialized = true;
     }
 
     private void Start()
     {
         if (initialized && IsSinglePlayer)
-            StartLocalAttempt();
+            StartRound();
     }
 
     private void OnEnable()
@@ -122,144 +127,217 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
             return;
         }
 
-        gateway.RemoteControlPreparing += OnRemotePreparing;
-        gateway.RemoteControlStarted += OnRemoteStarted;
-        gateway.RemoteControlEnded += OnRemoteEnded;
-        retryButton.onClick.AddListener(StartLocalAttempt);
+        if (usesPersistentGateway)
+        {
+            gateway.RemoteControlPreparing += OnRemotePreparing;
+            gateway.RemoteControlStarted += OnRemoteStarted;
+            gateway.RemoteControlEnded += OnRemoteEnded;
+        }
+        retryButton.onClick.AddListener(OnRetryClicked);
 
-        // Re-enabling a stage never restores a previous grant or running attempt.
         state = StageState.Ready;
-        if (gateway.HasAuthority) gateway.ReclaimControl();
+        handoff.Reset();
         inputRouter.UseLocalInput();
-        ResetAttempt();
+        ResetRound();
         statusText.text = "READY";
         RefreshAvailability();
     }
 
     private void OnDisable()
     {
-        if (gateway != null)
+        if (gateway != null && usesPersistentGateway)
         {
             gateway.RemoteControlPreparing -= OnRemotePreparing;
             gateway.RemoteControlStarted -= OnRemoteStarted;
             gateway.RemoteControlEnded -= OnRemoteEnded;
             gateway.AllowRemoteApproval = false;
-            if (gateway.HasAuthority) gateway.ReclaimControl();
-            if (usesPersistentGateway) gateway.UnbindStageInputs(inputRouter);
+            // A controller carried into the next stage keeps their turn.
+            if (gateway.HasAuthority && !gateway.IsCarryingControl) gateway.ReclaimControl();
+            gateway.UnbindStageInputs(inputRouter);
         }
 
         if (retryButton != null)
         {
-            retryButton.onClick.RemoveListener(StartLocalAttempt);
+            retryButton.onClick.RemoveListener(OnRetryClicked);
             retryButton.interactable = false;
         }
 
         StopSimulation();
+        DodgeBullet.Frozen = false;
         if (initialized) ClearBullets();
     }
 
     public void PrepareToLeave()
     {
-        // OnDisable removes event subscriptions, revokes control and clears bullets.
         enabled = false;
     }
 
     private void Update()
     {
         if (!initialized) return;
+        float deltaTime = Time.deltaTime;
 
-        // OnEnable can run before InputRouter is active due to execution order.
-        // Refresh while READY too, so the initial disabled button can recover.
+        handoff.Tick(deltaTime);
         RefreshAvailability();
 
-        if (state == StageState.PreparingRemote)
-            statusText.text = gateway.ControlState;
-        if (state == StageState.Advancing)
+        // Handoff: everything stands still and no time passes.
+        if (handoff.Paused && state != StageState.Advancing)
         {
-            UpdateAdvance();
-            return;
-        }
-        if (!IsPlaying) return;
-
-        if (state == StageState.PlayingRemote &&
-            (!gateway.IsConnected || !gateway.IsControlling ||
-             !inputRouter.isActiveAndEnabled || !inputRouter.IsRemoteControl))
-        {
-            EndAttempt(StageState.Cancelled);
+            SetSimulation(false);
+            statusText.text = handoff.Label;
             return;
         }
 
-        if (playerHit.IsHit)
+        switch (state)
         {
-            EndAttempt(StageState.Failed);
-            return;
-        }
+            case StageState.Ready:
+                statusText.text = "READY";
+                break;
 
-        remainingTime = Mathf.Max(0f, surviveDuration - (Time.time - roundStartedAt));
-        if (remainingTime <= 0f)
-        {
-            EndAttempt(StageState.Cleared);
-            return;
-        }
+            case StageState.Playing:
+                SetSimulation(true);
+                if (playerHit.IsHit)
+                {
+                    FailRound();
+                    break;
+                }
+                roundTime += deltaTime;
+                RunRecord.AddControlTime(gateway, deltaTime);
+                if (roundTime >= surviveDuration)
+                {
+                    ClearRound();
+                    break;
+                }
+                statusText.text = $"TIME: {Mathf.CeilToInt(surviveDuration - roundTime)}";
+                break;
 
-        RefreshTimeText();
+            case StageState.Failed:
+                retryLeft -= deltaTime;
+                statusText.text = $"FAILED\nRETRY IN {Mathf.Max(1, Mathf.CeilToInt(retryLeft))}";
+                if (retryLeft <= 0f) StartRound();
+                break;
+
+            case StageState.Advancing:
+                UpdateAdvance(deltaTime);
+                break;
+        }
     }
 
-    private void StartLocalAttempt()
+    private void OnRetryClicked()
     {
-        if (!CanStartAttempt || gateway.HasAuthority || !inputRouter.isActiveAndEnabled)
-            return;
-
+        if (!CanHostStartRound) return;
         inputRouter.UseLocalInput();
-        ResetAttempt();
-        BeginPlaying(false);
+        StartRound();
     }
+
+    private bool CanHostStartRound => initialized && isActiveAndEnabled &&
+        (state == StageState.Ready || state == StageState.Failed || state == StageState.Cleared) &&
+        !handoff.Paused && !gateway.HasAuthority && inputRouter.isActiveAndEnabled;
 
     private void OnRemotePreparing()
     {
-        if (!CanStartAttempt)
+        // Allowed at any time except while the next stage is loading.
+        if (state == StageState.Advancing)
         {
             gateway.ReclaimControl();
             return;
         }
-
-        state = StageState.PreparingRemote;
-        ResetAttempt();
-        statusText.text = "CONNECTING VIDEO";
-        RefreshAvailability();
+        handoff.OnPreparing();
+        SetSimulation(false);
     }
 
     private void OnRemoteStarted()
     {
-        if (state != StageState.PreparingRemote || !gateway.IsControlling ||
-            !inputRouter.IsRemoteControl)
+        if (!handoff.Paused || !gateway.IsControlling || !inputRouter.IsRemoteControl)
         {
             gateway.ReclaimControl();
             return;
         }
-
-        // The existing server sends control_started after its countdown.
-        BeginPlaying(true);
+        handoff.OnStarted();
+        // Approved before any round ran: the participant starts stage 1.
+        if (state == StageState.Ready || state == StageState.Cleared) StartRound();
     }
 
     private void OnRemoteEnded()
     {
-        if (state == StageState.PreparingRemote || state == StageState.PlayingRemote)
-            EndAttempt(StageState.Cancelled);
+        // Nothing is running: no need for a host countdown.
+        if (state == StageState.Ready || state == StageState.Advancing || state == StageState.Cleared)
+            handoff.Reset();
+        else
+            handoff.OnEnded();
     }
 
-    private void BeginPlaying(bool remote)
+    private void StartRound()
     {
-        state = remote ? StageState.PlayingRemote : StageState.PlayingLocal;
-        roundStartedAt = Time.time;
-        remainingTime = surviveDuration;
-        actorController.enabled = true;
-        bulletSpawner.enabled = true;
-        RefreshTimeText();
-        RefreshAvailability();
+        ResetRound();
+        state = StageState.Playing;
+        SetSimulation(!handoff.Paused);
     }
 
-    private void ResetAttempt()
+    private void FailRound()
+    {
+        RunRecord.Player player = RunRecord.NoteFail(gateway);
+        state = StageState.Failed;
+        retryLeft = retryDelay;
+        StopSimulation();
+        ClearBullets();
+        Debug.Log("[Dodge] FAILED by " + player.Name, this);
+        if (Multiplayer)
+            gateway.ReportRunEvent("failed", $"{player.Name} 피격! {retryDelay:0}초 후 1스테이지 다시 시작");
+    }
+
+    private void ClearRound()
+    {
+        RunRecord.Player player = RunRecord.NoteClear(gateway, StageName);
+        StopSimulation();
+        ClearBullets();
+        Debug.Log("[Dodge] CLEAR by " + player.Name, this);
+        if (Multiplayer)
+            gateway.ReportRunEvent("stage_cleared", $"{player.Name}님이 {StageName} 클리어! 다음 스테이지로 이동합니다");
+
+        if (StageSceneLoader.CanLoad(nextStageSceneName))
+        {
+            state = StageState.Advancing;
+            advanceLeft = nextStageDelay;
+            statusText.text = $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}";
+        }
+        else
+        {
+            state = StageState.Cleared;
+            statusText.text = "CLEAR!";
+        }
+    }
+
+    private void UpdateAdvance(float deltaTime)
+    {
+        // The current controller keeps playing in the next stage; no handoff now.
+        advanceLeft -= deltaTime;
+        if (advanceLeft > 0f)
+        {
+            statusText.text = $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}";
+            return;
+        }
+
+        statusText.text = "LOADING...";
+        if (!StageSceneLoader.Load(nextStageSceneName, this, this, carryControl: true))
+        {
+            state = StageState.Cleared;
+            statusText.text = "CLEAR!";
+        }
+    }
+
+    private void RefreshAvailability()
+    {
+        if (Multiplayer)
+            gateway.AllowRemoteApproval = gateway.isActiveAndEnabled && state != StageState.Advancing;
+        retryButton.interactable = CanHostStartRound;
+        if (retryLabel != null)
+            retryLabel.text = IsSinglePlayer
+                ? (state == StageState.Ready ? "START" : "RETRY")
+                : (state == StageState.Ready ? "START LOCAL" : "RETRY LOCAL");
+    }
+
+    private void ResetRound()
     {
         StopSimulation();
         ClearBullets();
@@ -274,81 +352,22 @@ public class DodgeStageController : MonoBehaviour, IStageFlow
 
         playerHit.ResetHitState();
         bulletSpawner.ResetSpawnTimer();
-        remainingTime = surviveDuration;
+        roundTime = 0f;
     }
 
-    private void EndAttempt(StageState result)
+    // Runs or freezes the player, the spawner and every bullet together.
+    private void SetSimulation(bool running)
     {
-        if (!IsPlaying && state != StageState.PreparingRemote) return;
-
-        bool wasRemoteRound = state == StageState.PlayingRemote;
-        // Set the terminal state before revocation emits RemoteControlEnded.
-        // That callback must not overwrite CLEAR/FAILED with CANCELLED.
-        state = result;
-        StopSimulation();
-        ClearBullets();
-
-        if (gateway.HasAuthority)
-        {
-            if (wasRemoteRound && (result == StageState.Cleared || result == StageState.Failed))
-                gateway.CompleteRemoteRound(result == StageState.Cleared);
-            else
-                gateway.ReclaimControl();
-        }
-
-        statusText.text = result == StageState.Cleared ? "CLEAR!" :
-            result == StageState.Failed ? "FAILED" : "CANCELLED";
-        Debug.Log("[Dodge] " + statusText.text, this);
-
-        // 클리어하면 잠시 결과를 보여준 뒤 다음 스테이지로 이동합니다.
-        // Advancing 동안은 새 참가 승인과 RETRY를 막습니다.
-        if (result == StageState.Cleared && StageSceneLoader.CanLoad(nextStageSceneName))
-        {
-            state = StageState.Advancing;
-            advanceAt = Time.time + nextStageDelay;
-            UpdateAdvance();
-        }
-        RefreshAvailability();
-    }
-
-    private void UpdateAdvance()
-    {
-        float remaining = advanceAt - Time.time;
-        if (remaining > 0f)
-        {
-            statusText.text = $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(remaining)}";
-            return;
-        }
-
-        statusText.text = "LOADING...";
-        if (!StageSceneLoader.Load(nextStageSceneName, this, this))
-        {
-            // 이동에 실패하면 이 스테이지에서 다시 도전할 수 있게 둡니다.
-            state = StageState.Cleared;
-            statusText.text = "CLEAR!";
-            RefreshAvailability();
-        }
-    }
-
-    private void RefreshTimeText()
-    {
-        statusText.text = $"TIME: {Mathf.CeilToInt(remainingTime)}";
-    }
-
-    private void RefreshAvailability()
-    {
-        gateway.AllowRemoteApproval = !IsSinglePlayer && gateway.isActiveAndEnabled &&
-            CanStartAttempt && !gateway.HasAuthority;
-        retryButton.interactable = CanStartAttempt && !gateway.HasAuthority &&
-            inputRouter.isActiveAndEnabled;
-        if (retryLabel != null)
-            retryLabel.text = IsSinglePlayer
-                ? (state == StageState.Ready ? "START" : "RETRY")
-                : (state == StageState.Ready ? "START LOCAL" : "RETRY LOCAL");
+        if (simulationRunning == running && actorController.enabled == running) return;
+        simulationRunning = running;
+        actorController.enabled = running;
+        bulletSpawner.enabled = running;
+        DodgeBullet.Frozen = !running;
     }
 
     private void StopSimulation()
     {
+        simulationRunning = false;
         if (actorController != null) actorController.enabled = false;
         if (bulletSpawner != null) bulletSpawner.enabled = false;
     }

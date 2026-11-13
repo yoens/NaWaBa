@@ -17,7 +17,10 @@ public static class StageSceneLoader
         !string.IsNullOrWhiteSpace(sceneName) &&
         Application.CanStreamedLevelBeLoaded(sceneName);
 
-    public static bool Load(string sceneName, IStageFlow leaving, Object context)
+    // carryControl: moving to the next stage of the same run. A participant who is playing
+    // keeps their turn (new video + countdown in the next stage). Returning to the lobby or
+    // starting a new game never carries control.
+    public static bool Load(string sceneName, IStageFlow leaving, Object context, bool carryControl = false)
     {
         if (loading) return false;
         if (!CanLoad(sceneName))
@@ -27,6 +30,12 @@ public static class StageSceneLoader
         }
 
         loading = true;
+        if (carryControl && GameSession.Mode == GameMode.Multiplayer)
+        {
+            RemoteInputGateway gateway = MultiplayerHostSession.Instance != null
+                ? MultiplayerHostSession.Instance.Gateway : null;
+            if (gateway != null) gateway.BeginStageCarry();
+        }
         leaving?.PrepareToLeave();
 
         // The persistent gateway accepts one video sender. Release this stage's

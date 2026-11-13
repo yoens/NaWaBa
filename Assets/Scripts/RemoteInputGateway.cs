@@ -37,7 +37,10 @@ public class RemoteInputGateway : MonoBehaviour
             return false;
         }
         AllowRemoteApproval = false;
-        ReclaimControl();
+        // A controller carried over from the previous stage keeps their turn; resume is
+        // requested from Update once this stage's video sender has registered.
+        if (carrying) resumePending = true;
+        else ReclaimControl();
         inputRouter = router;
         remoteInputSource = source;
         remoteInputSource.ClearInput();
@@ -50,7 +53,7 @@ public class RemoteInputGateway : MonoBehaviour
     {
         if (!managedLobbySession || inputRouter != expectedRouter) return;
         AllowRemoteApproval = false;
-        ReclaimControl();
+        if (!carrying) ReclaimControl();
         // The request list belongs to the room, not the scene: it survives stage changes.
         if (remoteInputSource != null) remoteInputSource.ClearInput();
         if (inputRouter != null) inputRouter.UseLocalInput();
@@ -138,7 +141,7 @@ public class RemoteInputGateway : MonoBehaviour
         return true;
     }
 
-    private const int ProtocolVersion = 7;
+    private const int ProtocolVersion = 8;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
     private Session session;
@@ -153,6 +156,10 @@ public class RemoteInputGateway : MonoBehaviour
     private string localVideoGrant = "";
     private bool localVideoConnected;
     private NaWaBaRoomVideoSender videoSender;
+    // Stage change with a remote controller: authority is kept, video/input are not.
+    private bool carrying;
+    private bool resumePending;
+    public bool IsCarryingControl => carrying;
     public string CurrentGrantId => authority != null ? authority.grantId ?? "" : "";
     public int RemoteCountdown => countdownEndsAt > 0
         ? Math.Max(0, (int)Math.Ceiling(countdownEndsAt - ClockNow())) : 0;
@@ -170,7 +177,7 @@ public class RemoteInputGateway : MonoBehaviour
     {
         if (videoSender != sender) return;
         videoSender = null;
-        if (HasAuthority) ReclaimControl();
+        if (HasAuthority && !carrying) ReclaimControl();
     }
 
     public bool SendVideoOffer(string grant, string sdp)
@@ -201,7 +208,11 @@ public class RemoteInputGateway : MonoBehaviour
     public string PendingControllerId { get; private set; } = "";
     public string PendingRequestId { get; private set; } = "";
     public string PendingNickname { get; private set; } = "";
-    public bool HasPendingRequest => IsConnected && authority == null && PendingRequestId.Length > 0;
+    // Approval is possible when nobody plays remotely, or while a participant plays
+    // (that hands control over). Not while a handoff or stage change is still being prepared.
+    public bool HasPendingRequest => IsConnected && PendingRequestId.Length > 0 &&
+        !carrying && (authority == null || controlling);
+    public string ControllerId => authority != null ? authority.controllerId ?? "" : "";
 
     // Server-ordered request list (front = the one Approve will grant).
     private const int MaxQueueEntries = 64;
@@ -295,6 +306,9 @@ public class RemoteInputGateway : MonoBehaviour
         public string stageName;
         public string controls;
         public QueueEntry[] queue;   // queue_status: waiting requests, front first
+        public string kind;          // run_event
+        public string text;          // run_event
+        public string[] lines;       // run_event (final result)
     }
 
     [Serializable]
@@ -346,6 +360,15 @@ public class RemoteInputGateway : MonoBehaviour
     {
         bool hadAuthority = authority != null;
         authority = null;
+        carrying = false;
+        resumePending = false;
+        ResetControlState();
+        if (hadAuthority) RemoteControlEnded?.Invoke();
+    }
+
+    // Stops video and input for the current grant without ending the participant's turn.
+    private void ResetControlState()
+    {
         controlling = false;
         videoReady = false;
         localVideoConnected = false;
@@ -355,7 +378,33 @@ public class RemoteInputGateway : MonoBehaviour
         lastSequence = -1;
         if (remoteInputSource != null) remoteInputSource.ClearInput();
         if (inputRouter != null) inputRouter.UseLocalInput();
-        if (hadAuthority) RemoteControlEnded?.Invoke();
+        if (authority != null) authority.grantId = "";
+    }
+
+    // Called just before loading the next stage. A remote controller keeps their turn:
+    // the server pauses the grant and the next stage asks for a fresh video + countdown.
+    public bool BeginStageCarry()
+    {
+        if (!controlling || authority == null || string.IsNullOrEmpty(authority.grantId)) return false;
+        if (!Queue(new Message {
+                type = "stage_transition", controllerId = authority.controllerId,
+                requestId = authority.requestId, grantId = authority.grantId }))
+            return false;
+        ResetControlState();
+        carrying = true;
+        resumePending = false;
+        return true;
+    }
+
+    // The run is over (all clear): return control to the host; the request list stays.
+    public void EndRunControl() => ReleaseControl("run_complete");
+
+    // Room-wide game events for the web page (failures, clears, final result).
+    public void ReportRunEvent(string kind, string text, string[] lines = null)
+    {
+        if (!IsConnected) return;
+        Queue(new Message { type = "run_event", kind = kind, text = text ?? "",
+            lines = lines ?? Array.Empty<string>() });
     }
 
     private void OnEnable()
@@ -426,7 +475,7 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
-                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "7");
+                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "8");
                 socket.Options.SetRequestHeader("X-NaWaBa-Guest-Status", "1");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
@@ -517,6 +566,9 @@ public class RemoteInputGateway : MonoBehaviour
     public void ApprovePendingRequest()
     {
         if (!CanApprovePendingRequest) return;
+        // Approving while someone else plays: the server ends their grant ("replaced").
+        // Locally we skip RemoteControlEnded so the stage stays paused for the newcomer.
+        if (authority != null) ResetControlState();
         authority = new Message {
             controllerId = PendingControllerId, requestId = PendingRequestId,
             nickname = PendingNickname
@@ -586,6 +638,19 @@ public class RemoteInputGateway : MonoBehaviour
             enabled = false;
             return;
         }
+        if (carrying && resumePending && helloReceived && authority != null &&
+            videoSender != null && videoSender.isActiveAndEnabled &&
+            inputRouter != null && inputRouter.isActiveAndEnabled)
+        {
+            resumePending = false;
+            carrying = false; // From here it is an ordinary approval waiting for its grant.
+            if (Queue(new Message {
+                    type = "resume_control", controllerId = authority.controllerId,
+                    requestId = authority.requestId }))
+                RemoteControlPreparing?.Invoke();
+            else
+                ClearAuthority();
+        }
         Message latest = null;
         double receivedAt = 0;
         try
@@ -607,7 +672,7 @@ public class RemoteInputGateway : MonoBehaviour
                     guestConnected = guestStatusSupported && message.guestConnected;
                     participantCount = guestConnected ? Mathf.Max(0, message.participantCount) : 0;
                     helloReceived = true;
-                    Debug.Log("NaWaBa connected (protocol 7), room: " + RoomId, this);
+                    Debug.Log("NaWaBa connected (protocol 8), room: " + RoomId, this);
                     SendStageStatus();
                     continue;
                 }

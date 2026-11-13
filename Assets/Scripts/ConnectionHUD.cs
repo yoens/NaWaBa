@@ -45,7 +45,8 @@ public class ConnectionHUD : MonoBehaviour
             return;
         }
 
-        string player = string.IsNullOrEmpty(gateway.PlayerName) ? "-" : gateway.PlayerName;
+        // The player currently holding (or about to hold) the controls; otherwise the host.
+        string player = gateway.HasAuthority && !string.IsNullOrEmpty(gateway.PlayerName) ? gateway.PlayerName : "HOST";
         statusText.text = $"Server: {(gateway.IsConnected ? "CONNECTED" : "DISCONNECTED")} / Room: {gateway.RoomLabel}" +
             $" / Guests: {gateway.ParticipantCount}\n" +
             $"Mode: {gateway.ControlState}\nPlayer: {player} / Waiting: {gateway.QueueCount} / Next: {gateway.QueueSummary}";

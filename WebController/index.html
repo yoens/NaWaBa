@@ -36,6 +36,9 @@
         #resultPanel { margin: 16px 0; padding: 18px; border: 1px solid #7393ad;
             border-left: 5px solid #7393ad; border-radius: 8px; background: #203040; }
         #resultPanel[data-kind="success"] { border-left-color: #75dfaa; }
+        #resultLines { margin: 8px 0 12px; padding-left: 18px; line-height: 1.6; }
+        #resultLines:empty { display: none; }
+        #event { min-height: 1.4em; margin: 0 0 10px; font-weight: bold; color: #ffd17c; }
         #resultPanel[data-kind="failed"] { border-left-color: #ff9b97; }
         #resultPanel[data-kind="connection"] { border-left-color: #ffd17c; }
         #resultTitle { margin: 0 0 6px; font-size: 24px; }
@@ -46,6 +49,7 @@
 <body>
     <h1>NaWaBa 원격 플레이</h1>
     <p id="stage" role="status">현재 스테이지 확인 중…</p>
+    <p id="event" role="status" aria-live="polite"></p>
     <p>조작을 신청하면 호스트 승인 후 게임 영상이 연결됩니다. 화면이 표시된 뒤 3초 후 시작합니다.</p>
     <label for="nickname">닉네임 (1~20자)</label>
     <input id="nickname" maxlength="20" autocomplete="off" placeholder="예: Yeonsu">
@@ -60,6 +64,7 @@
     <section id="resultPanel" role="status" aria-live="polite" hidden>
         <h2 id="resultTitle"></h2>
         <p id="resultDescription"></p>
+        <ul id="resultLines"></ul>
         <button id="retryRequest" disabled>다시 참가 신청</button>
         <span class="hint">다시 플레이하려면 호스트의 승인이 필요합니다.</span>
     </section>
@@ -91,6 +96,8 @@
         const videoOverlay = document.getElementById("videoOverlay");
         const directionButtons = Array.from(document.querySelectorAll(".pad button, .extra button"));
         const stageText = document.getElementById("stage");
+        const eventText = document.getElementById("event");
+        const resultLines = document.getElementById("resultLines");
         const controlsHint = document.getElementById("controlsHint");
         const pointers = new Map();
         const stopButton = document.getElementById("stop");
@@ -121,7 +128,7 @@
         renderRoom();
         const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/controller`);
         socket.addEventListener("open", () => {
-            socket.send(JSON.stringify({ protocolVersion: 7, type: "join", roomId, joinKey }));
+            socket.send(JSON.stringify({ protocolVersion: 8, type: "join", roomId, joinKey }));
         });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
@@ -187,6 +194,8 @@
             busy: "다른 참가자가 신청했거나 조작 중입니다. 잠시 후 다시 신청하세요.",
             host_removed: "호스트가 신청 목록에서 제외했습니다. 다시 신청할 수 있습니다.",
             replaced: "호스트가 다른 참가자에게 조작을 넘겼습니다. 다시 신청하면 목록 맨 뒤에 들어갑니다.",
+            run_complete: "전체 클리어! 이번 판이 끝났습니다.",
+            transition_timeout: "다음 스테이지 영상이 준비되지 않아 호스트에게 조작이 돌아갔습니다.",
             invalid_input: "올바르지 않은 입력으로 조작이 종료되었습니다."
         };
 
@@ -202,6 +211,8 @@
                 busy: { kind: "stopped", title: "지금은 신청할 수 없습니다" },
                 host_removed: { kind: "stopped", title: "신청 목록에서 제외되었습니다" },
                 replaced: { kind: "stopped", title: "다른 참가자에게 조작이 넘어갔습니다" },
+                run_complete: { kind: "success", title: "전체 클리어!" },
+                transition_timeout: { kind: "connection", title: "다음 스테이지 연결에 실패했습니다" },
                 ready_timeout: { kind: "connection", title: "영상이 준비되지 않아 시작을 취소했습니다" },
                 invalid_input: { kind: "stopped", title: "입력 오류로 플레이가 종료되었습니다" }
             };
@@ -218,14 +229,45 @@
             resultPanel.hidden = true;
             resultTitle.textContent = "";
             resultDescription.textContent = "";
+            resultLines.replaceChildren();
             videoOverlay.textContent = "호스트 승인 대기";
+        }
+        // Final result of a run: shown to everyone in the room, replacing any earlier result.
+        function showRunResult(text, lines) {
+            lastResult = { kind: "success", title: "전체 클리어!" };
+            resultPanel.hidden = false;
+            resultPanel.dataset.kind = "success";
+            resultTitle.textContent = lastResult.title;
+            resultDescription.textContent = text || "";
+            resultLines.replaceChildren(...lines.map(line => {
+                const item = document.createElement("li");
+                item.textContent = line;
+                return item;
+            }));
+            videoOverlay.textContent = lastResult.title;
+            renderButtons();
+        }
+        // Stage cleared while I play: my turn continues in the next stage after a new video.
+        function transitionControl() {
+            videoReceiver.stop();
+            pointers.clear();
+            keys.clear();
+            sequence = 0;
+            jumpCount = 0;
+            countdownEndsAt = 0;
+            lastVideoHeartbeat = 0;
+            phase = "transition";
+            inputText.textContent = "x=0, y=0";
+            statusText.textContent = "다음 스테이지 준비 중 · 조작 차례는 그대로 유지됩니다.";
+            videoOverlay.textContent = "다음 스테이지 준비 중…";
+            renderButtons();
         }
         function renderButtons() {
             requestButton.disabled = !connected || !hostOnline || phase !== "idle";
             retryRequestButton.disabled = requestButton.disabled;
             nicknameInput.disabled = phase !== "idle";
             for (const button of directionButtons) button.disabled = phase !== "active";
-            stopButton.disabled = !connected || !["pending", "video", "starting", "active"].includes(phase);
+            stopButton.disabled = !connected || !["pending", "transition", "video", "starting", "active"].includes(phase);
             stopButton.textContent = phase === "pending" ? "신청 취소" : "조작 중지";
         }
         function clearControl() {
@@ -253,7 +295,7 @@
                 socket.close();
                 return false;
             }
-            socket.send(JSON.stringify({ ...extra, protocolVersion: 7, roomId, type }));
+            socket.send(JSON.stringify({ ...extra, protocolVersion: 8, roomId, type }));
             return true;
         }
         function identity() { return { controllerId, requestId, grantId }; }
@@ -325,7 +367,7 @@
             let message;
             try {
                 message = JSON.parse(event.data);
-                if (!message || message.protocolVersion !== 7 || message.roomId !== roomId) throw new Error();
+                if (!message || message.protocolVersion !== 8 || message.roomId !== roomId) throw new Error();
             } catch {
                 connected = false;
                 clearControl();
@@ -389,10 +431,22 @@
                 showResult(message.reason, requestStatus.textContent);
                 return;
             }
-            if (message.type === "control_granted" && phase === "pending" && sameRequest(message)) {
+            if (message.type === "stage_transition" && ["active", "starting", "video"].includes(phase) &&
+                sameRequest(message) && message.grantId === grantId) {
+                transitionControl();
+                return;
+            }
+            if (message.type === "run_event") {
+                const text = typeof message.text === "string" ? message.text : "";
+                const lines = Array.isArray(message.lines) ? message.lines.filter(l => typeof l === "string") : [];
+                eventText.textContent = text;
+                if (message.kind === "run_result") showRunResult(text, lines);
+                return;
+            }
+            if (message.type === "control_granted" && ["pending", "transition"].includes(phase) && sameRequest(message)) {
                 grantId = message.grantId;
                 phase = "video";
-                requestStatus.textContent = "호스트 승인 완료";
+                requestStatus.textContent = message.resumed ? "다음 스테이지에서 이어서 조작합니다" : "호스트 승인 완료";
                 statusText.textContent = "게임 영상 연결 중…";
                 videoOverlay.textContent = "게임 영상 연결 중…";
                 renderButtons();

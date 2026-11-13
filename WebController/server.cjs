@@ -6,11 +6,11 @@ const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
 
-// Protocol 7: update server.cjs, index.html and RemoteInputGateway.cs together.
+// Protocol 8: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
 // room after authentication. This in-memory registry is for ONE server process.
 function createApplication(options = {}) {
-    const PROTOCOL = 7;
+    const PROTOCOL = 8;
     const { hostKey } = options;
     const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
     if (!validKey(hostKey)) throw new Error("A 32-byte host key is required.");
@@ -22,6 +22,8 @@ function createApplication(options = {}) {
     const readyTimeout = options.readyTimeout ?? 60000;
     const videoTimeout = options.videoTimeout ?? 1500;
     const startDelay = options.startDelay ?? 3000;
+    // A controller carried into the next stage must get a new video within this time.
+    const transitionTimeout = options.transitionTimeout ?? 30000;
     const heartbeatMs = options.heartbeatMs ?? 20000;
     const maxRooms = options.maxRooms ?? 8;
     const maxConnections = options.maxConnections ?? 96;
@@ -192,7 +194,7 @@ function createApplication(options = {}) {
                 return;
             }
             if (request.headers["x-nawaba-protocol"] !== String(PROTOCOL)) {
-                socket.close(1008, "Update Unity client to protocol 7");
+                socket.close(1008, "Update Unity client to protocol 8");
                 return;
             }
             if (rooms.size >= maxRooms) { socket.close(1013, "Room limit reached"); return; }
@@ -248,6 +250,40 @@ function createApplication(options = {}) {
                     if (matchesGrant(room, message)) revoke(room, "video_failed");
                     return;
                 }
+                if (message.type === "stage_transition") {
+                    // The controller cleared a stage and keeps their turn in the next one.
+                    // Inputs stop (grant inactive) and the old video/grant ID become invalid.
+                    if (!matchesGrant(room, message) || !room.grant.active) return;
+                    const grant = room.grant;
+                    Object.assign(grant, { active: false, transitioning: true, transitionAt: performance.now(),
+                        offerSent: false, answerSent: false, startAt: null, lastVideoAt: 0 });
+                    send(room, participant(room, grant.controllerId), { type: "stage_transition", ...ids(grant) });
+                    return;
+                }
+                if (message.type === "resume_control") {
+                    // Next stage is ready: same turn, fresh grant ID, normal video + countdown again.
+                    if (!matches(message, room.grant) || !room.grant.transitioning) return;
+                    const grant = room.grant;
+                    Object.assign(grant, { grantId: randomUUID(), transitioning: false,
+                        approvedAt: performance.now(), lastSequence: -1, lastInputAt: 0 });
+                    const notification = { type: "control_granted", ...ids(grant), resumed: true };
+                    if (!send(room, socket, notification) || !send(room, participant(room, grant.controllerId), notification))
+                        revoke(room, "connection_lost");
+                    return;
+                }
+                if (message.type === "run_event") {
+                    // Display-only game events (fail, clear, final result) for every participant.
+                    const kinds = ["failed", "fell", "stage_cleared", "run_result"];
+                    const text = typeof message.text === "string" ? message.text : "";
+                    const lines = Array.isArray(message.lines) ? message.lines : [];
+                    if (!kinds.includes(message.kind) || text.length > 100 || lines.length > 16 ||
+                        !lines.every(line => typeof line === "string" && line.length <= 100)) {
+                        socket.close(1008, "Invalid run event");
+                        return;
+                    }
+                    broadcast(room, { type: "run_event", kind: message.kind, text, lines });
+                    return;
+                }
                 if (message.type === "stage_status") {
                     // Display-only: which stage the host is on and which web buttons apply.
                     const stageId = message.stageId;
@@ -269,7 +305,7 @@ function createApplication(options = {}) {
                             revoke(room, message.reason);
                         return;
                     }
-                    if (["input_timeout", "video_timeout"].includes(message.reason)) {
+                    if (["input_timeout", "video_timeout", "run_complete"].includes(message.reason)) {
                         if (matchesGrant(room, message)) revoke(room, message.reason);
                         return;
                     }
@@ -408,7 +444,9 @@ function createApplication(options = {}) {
     const timer = setInterval(() => {
         const now = performance.now();
         for (const room of rooms.values()) {
-            if (room.grant && !room.grant.active && room.grant.startAt === null &&
+            if (room.grant && room.grant.transitioning &&
+                now - room.grant.transitionAt >= transitionTimeout) revoke(room, "transition_timeout");
+            if (room.grant && !room.grant.transitioning && !room.grant.active && room.grant.startAt === null &&
                 now - room.grant.approvedAt >= readyTimeout) revoke(room, "ready_timeout");
             if (room.grant && room.grant.startAt !== null &&
                 now - room.grant.lastVideoAt >= videoTimeout) revoke(room, "video_timeout");
@@ -445,7 +483,7 @@ if (require.main === module) {
         const config = readServerConfig();
         const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
-            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 7)`);
+            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 8)`);
             console.log("Guest status notifications enabled for supported Unity clients.");
             console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });

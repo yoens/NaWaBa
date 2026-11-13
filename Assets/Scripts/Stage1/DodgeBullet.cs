@@ -6,21 +6,29 @@ public class DodgeBullet : MonoBehaviour
     [SerializeField, Min(0.1f)] private float moveSpeed = 4f;
     [SerializeField, Min(0.1f)] private float lifeTime = 6f;
 
+    // Set by the stage while control is being handed over: bullets stay where they are.
+    public static bool Frozen { get; set; }
+
     private Rigidbody body;
+    private float age;
 
     private void Awake()
     {
         body = GetComponent<Rigidbody>();
     }
 
-    private void Start()
-    {
-        // 경기장을 벗어난 총알이 계속 남지 않도록 제거합니다.
-        Destroy(gameObject, lifeTime);
-    }
-
     private void FixedUpdate()
     {
+        if (Frozen) return;
+
+        // 경기장을 벗어난 총알이 계속 남지 않도록 제거합니다. 정지 중에는 나이를 세지 않습니다.
+        age += Time.fixedDeltaTime;
+        if (age >= lifeTime)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
         // 월드 Z축의 음수 방향: 현재 카메라에서는 화면 아래쪽입니다.
         Vector3 nextPosition =
             body.position
@@ -28,4 +36,7 @@ public class DodgeBullet : MonoBehaviour
 
         body.MovePosition(nextPosition);
     }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetStatics() => Frozen = false;
 }
