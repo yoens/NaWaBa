@@ -77,7 +77,7 @@ public class MultiplayerLobbyController : MonoBehaviour
         {
             // Two lines fit the existing status label; no extra Inspector reference is required.
             string state = !gateway.SupportsGuestStatus ? "UPDATE SERVER" :
-                gateway.IsGuestConnected ? "GUEST CONNECTED" : "WAITING FOR GUEST";
+                gateway.IsGuestConnected ? $"GUESTS: {gateway.ParticipantCount}" : "WAITING FOR GUEST";
             connectionStatusText.text = state + "\nROOM: " + gateway.RoomLabel;
         }
         else if (connecting)

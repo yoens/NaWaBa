@@ -17,6 +17,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/Stage_Dodge.unity
     guid: 7393bef795528bb49ac4154e2f6ac0d5
+  - enabled: 1
+    path: Assets/Scenes/Stage_Climb.unity
+    guid: 9ac21d04c2b7ccb41bc5da780393dfaa
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   m_UseUCBPForAssetBundles: 0

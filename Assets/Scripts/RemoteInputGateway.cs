@@ -94,8 +94,11 @@ public class RemoteInputGateway : MonoBehaviour
     private string inviteUrl = "";
     private bool guestStatusSupported;
     private bool guestConnected;
+    private int participantCount;
     public bool SupportsGuestStatus => IsConnected && guestStatusSupported;
     public bool IsGuestConnected => SupportsGuestStatus && guestConnected;
+    // Web participants currently in this room (watchers + at most one controller).
+    public int ParticipantCount => SupportsGuestStatus ? participantCount : 0;
     private double connectionStartedAt;
     private static Task pendingShutdown = Task.CompletedTask;
     public string InviteUrl => IsConnected ? inviteUrl : "";
@@ -142,7 +145,7 @@ public class RemoteInputGateway : MonoBehaviour
         return true;
     }
 
-    private const int ProtocolVersion = 5;
+    private const int ProtocolVersion = 6;
     private const int MaxPendingMessages = 32;
     private const double InputTimeout = 0.5;
     private Session session;
@@ -275,6 +278,7 @@ public class RemoteInputGateway : MonoBehaviour
         public int countdownMs;
         public bool guestStatusSupported;
         public bool guestConnected;
+        public int participantCount;
         public long sequence = -1;
         public float x;
         public float y;
@@ -357,6 +361,7 @@ public class RemoteInputGateway : MonoBehaviour
         RoomId = "";
         guestStatusSupported = false;
         guestConnected = false;
+        participantCount = 0;
         ConnectionIssue = "";
         ClearPendingRequest();
         ClearAuthority();
@@ -395,7 +400,7 @@ public class RemoteInputGateway : MonoBehaviour
             using (var linked = CancellationTokenSource.CreateLinkedTokenSource(current.cancellation.Token))
             {
                 socket.Options.SetRequestHeader("X-NaWaBa-Host-Key", hostKey);
-                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "5");
+                socket.Options.SetRequestHeader("X-NaWaBa-Protocol", "6");
                 socket.Options.SetRequestHeader("X-NaWaBa-Guest-Status", "1");
                 linked.CancelAfter(TimeSpan.FromSeconds(120));
                 await socket.ConnectAsync(new Uri(address), linked.Token).ConfigureAwait(false);
@@ -572,8 +577,9 @@ public class RemoteInputGateway : MonoBehaviour
                     inviteUrl = message.inviteUrl;
                     guestStatusSupported = message.guestStatusSupported;
                     guestConnected = guestStatusSupported && message.guestConnected;
+                    participantCount = guestConnected ? Mathf.Max(0, message.participantCount) : 0;
                     helloReceived = true;
-                    Debug.Log("NaWaBa connected (protocol 5), room: " + RoomId, this);
+                    Debug.Log("NaWaBa connected (protocol 6), room: " + RoomId, this);
                     SendStageStatus();
                     continue;
                 }
@@ -585,7 +591,12 @@ public class RemoteInputGateway : MonoBehaviour
                     if (!guestStatusSupported)
                         throw new InvalidOperationException("Unexpected guest status message.");
                     // This is a connection snapshot, not movement input: scene-loading age is irrelevant.
-                    guestConnected = message.guestConnected;
+                    if (message.participantCount < 0 || message.participantCount > 1000)
+                        throw new InvalidOperationException("Invalid participant count.");
+                    guestConnected = message.guestConnected && message.participantCount > 0;
+                    participantCount = guestConnected ? message.participantCount : 0;
+                    // The server already revokes a request/grant whose owner left; this only
+                    // covers the case where nobody is left in the room.
                     if (!guestConnected)
                     {
                         ClearPendingRequest();
@@ -724,6 +735,7 @@ public class RemoteInputGateway : MonoBehaviour
         RoomId = "";
         guestStatusSupported = false;
         guestConnected = false;
+        participantCount = 0;
         ClearPendingRequest();
         ClearAuthority();
         var previous = session;

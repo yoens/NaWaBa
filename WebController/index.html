@@ -109,10 +109,19 @@
             statusText.textContent = "호스트가 전달한 전체 참가 링크로 접속하세요.";
             return;
         }
-        document.getElementById("room").textContent = `방: ${roomId.slice(0, 8)}`;
+        const roomText = document.getElementById("room");
+        let participantCount = 0;
+        let myTag = "";
+        function renderRoom() {
+            const parts = [`방: ${roomId.slice(0, 8)}`];
+            if (participantCount > 0) parts.push(`접속 ${participantCount}명`);
+            if (myTag) parts.push(`내 번호 #${myTag}`);
+            roomText.textContent = parts.join(" · ");
+        }
+        renderRoom();
         const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/controller`);
         socket.addEventListener("open", () => {
-            socket.send(JSON.stringify({ protocolVersion: 5, type: "join", roomId, joinKey }));
+            socket.send(JSON.stringify({ protocolVersion: 6, type: "join", roomId, joinKey }));
         });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
@@ -175,6 +184,7 @@
             video_timeout: "영상 수신이 멈춰 조작을 중지했습니다. 다시 신청하세요.",
             input_timeout: "입력 전송이 끊겨 권한을 반환했습니다.",
             invalid_nickname: "닉네임은 1~20자로 입력하세요.",
+            busy: "다른 참가자가 신청했거나 조작 중입니다. 잠시 후 다시 신청하세요.",
             invalid_input: "올바르지 않은 입력으로 조작이 종료되었습니다."
         };
 
@@ -187,6 +197,7 @@
                 host_reclaimed: { kind: "stopped", title: "호스트가 조작을 종료했습니다" },
                 controller_stopped: { kind: "stopped", title: "플레이를 중지했습니다" },
                 request_timeout: { kind: "stopped", title: "참가 신청이 만료되었습니다" },
+                busy: { kind: "stopped", title: "지금은 신청할 수 없습니다" },
                 ready_timeout: { kind: "connection", title: "영상이 준비되지 않아 시작을 취소했습니다" },
                 invalid_input: { kind: "stopped", title: "입력 오류로 플레이가 종료되었습니다" }
             };
@@ -237,7 +248,7 @@
                 socket.close();
                 return false;
             }
-            socket.send(JSON.stringify({ ...extra, protocolVersion: 5, roomId, type }));
+            socket.send(JSON.stringify({ ...extra, protocolVersion: 6, roomId, type }));
             return true;
         }
         function identity() { return { controllerId, requestId, grantId }; }
@@ -309,7 +320,7 @@
             let message;
             try {
                 message = JSON.parse(event.data);
-                if (!message || message.protocolVersion !== 5 || message.roomId !== roomId) throw new Error();
+                if (!message || message.protocolVersion !== 6 || message.roomId !== roomId) throw new Error();
             } catch {
                 connected = false;
                 clearControl();
@@ -320,6 +331,9 @@
             }
             if (message.type === "controller_hello") {
                 controllerId = message.controllerId;
+                // Short, per-connection tag so several viewers in one room can tell themselves apart.
+                myTag = String(controllerId).replace(/-/g, "").slice(0, 4).toUpperCase();
+                renderRoom();
                 connected = true;
                 hostOnline = message.hostOnline;
                 requestStatus.textContent = hostOnline ? "닉네임을 입력하고 조작을 신청하세요." : "Unity 연결을 기다리는 중입니다.";
@@ -328,6 +342,13 @@
             }
             if (message.type === "stage_status") {
                 applyStage(message);
+                return;
+            }
+            if (message.type === "room_status") {
+                if (Number.isSafeInteger(message.participantCount) && message.participantCount >= 0) {
+                    participantCount = message.participantCount;
+                    renderRoom();
+                }
                 return;
             }
             if (message.type === "host_status") {
@@ -408,9 +429,9 @@
             if (event.reason === "Room closed") {
                 statusText.textContent = "호스트 연결이 종료되어 방이 닫혔습니다. 새 참가 링크를 받아 주세요.";
             } else if (event.reason === "Invalid participant link") {
-                statusText.textContent = "참가 링크가 유효하지 않습니다. 호스트에게 새 링크를 받아 주세요.";
-            } else if (event.reason === "Controller already connected") {
-                statusText.textContent = "이 방에는 다른 참가자 또는 조작 탭이 이미 연결되어 있습니다.";
+                statusText.textContent = "링크가 만료되었거나 방이 종료되었습니다. 서버가 다시 시작되면 이전 링크는 쓸 수 없어요. 호스트에게 새 링크를 받아 주세요.";
+            } else if (event.reason === "Room full") {
+                statusText.textContent = "방이 가득 찼습니다. 다른 참가자가 나가면 다시 접속해 주세요.";
             } else {
                 statusText.textContent = "호스트에게 연결 상태를 확인하세요. 호스트가 재연결했다면 새 참가 링크가 필요합니다.";
             }

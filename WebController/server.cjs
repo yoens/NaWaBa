@@ -6,11 +6,11 @@ const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
 const { readServerConfig } = require("./server-config.cjs");
 
-// Protocol 5: update server.cjs, index.html and RemoteInputGateway.cs together.
+// Protocol 6: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
 // room after authentication. This in-memory registry is for ONE server process.
 function createApplication(options = {}) {
-    const PROTOCOL = 5;
+    const PROTOCOL = 6;
     const { hostKey } = options;
     const validKey = key => typeof key === "string" && /^[a-f0-9]{64}$/.test(key);
     if (!validKey(hostKey)) throw new Error("A 32-byte host key is required.");
@@ -25,7 +25,9 @@ function createApplication(options = {}) {
     const startDelay = options.startDelay ?? 3000;
     const heartbeatMs = options.heartbeatMs ?? 20000;
     const maxRooms = options.maxRooms ?? 8;
-    const maxConnections = options.maxConnections ?? 32;
+    const maxConnections = options.maxConnections ?? 96;
+    // Web participants per room (watchers + the one controller). Step 2: no simultaneous control.
+    const maxParticipants = options.maxParticipants ?? 8;
     const log = options.log || console.log;
     const rooms = new Map();
 
@@ -72,10 +74,21 @@ function createApplication(options = {}) {
             return false;
         }
     }
-    // Opt-in keeps older protocol-4 Unity builds compatible: they reject unknown message types.
-    function notifyGuestStatus(room, connected) {
-        if (!room.reportGuestStatus || room.closed) return;
-        send(room, room.host, { type: "controller_status", guestConnected: connected });
+    // Socket of one participant, or null. Request/grant messages go only to their owner.
+    function participant(room, controllerId) {
+        return (controllerId && room.participants.get(controllerId)) || null;
+    }
+    // Room-wide messages (stage, host state, headcount) go to every participant.
+    function broadcast(room, message) {
+        for (const socket of room.participants.values()) send(room, socket, message);
+    }
+    // Opt-in keeps older Unity builds compatible: they reject unknown message types.
+    function notifyParticipants(room) {
+        if (room.closed) return;
+        const participantCount = room.participants.size;
+        if (room.reportGuestStatus)
+            send(room, room.host, { type: "controller_status", guestConnected: participantCount > 0, participantCount });
+        broadcast(room, { type: "room_status", participantCount });
     }
     function ids(record) {
         return { controllerId: record.controllerId, requestId: record.requestId,
@@ -87,7 +100,7 @@ function createApplication(options = {}) {
         room.pending = null;
         const message = { type: "request_rejected", ...ids(previous), reason };
         send(room, room.host, message);
-        send(room, room.controller, message);
+        send(room, participant(room, previous.controllerId), message);
     }
     function revoke(room, reason) {
         const previous = room.grant;
@@ -95,7 +108,7 @@ function createApplication(options = {}) {
         room.grant = null; // Invalidate before notifying either peer.
         const message = { type: "control_revoked", ...ids(previous), reason };
         send(room, room.host, message);
-        send(room, room.controller, message);
+        send(room, participant(room, previous.controllerId), message);
         log(`[room ${room.id}] revoked: ${reason}`);
     }
     function matches(message, record) {
@@ -134,9 +147,9 @@ function createApplication(options = {}) {
         room.host = null;
         cancelPending(room, "host_disconnected");
         revoke(room, "host_disconnected");
-        send(room, room.controller, { type: "host_status", hostOnline: false });
-        if (room.controller) room.controller.close(1000, "Room closed");
-        room.controller = null;
+        broadcast(room, { type: "host_status", hostOnline: false });
+        for (const socket of room.participants.values()) socket.close(1000, "Room closed");
+        room.participants.clear();
         log(`[room ${room.id}] closed`);
     }
 
@@ -166,7 +179,7 @@ function createApplication(options = {}) {
                 return;
             }
             if (request.headers["x-nawaba-protocol"] !== String(PROTOCOL)) {
-                socket.close(1008, "Update Unity client to protocol 5");
+                socket.close(1008, "Update Unity client to protocol 6");
                 return;
             }
             if (rooms.size >= maxRooms) { socket.close(1013, "Room limit reached"); return; }
@@ -174,28 +187,29 @@ function createApplication(options = {}) {
             do { id = randomUUID(); } while (rooms.has(id));
             let joinKey;
             do { joinKey = randomBytes(32).toString("hex"); } while (joinKey === hostKey);
-            const room = { id, joinKey, host: socket, controller: null,
+            const room = { id, joinKey, host: socket, participants: new Map(),
                 pending: null, grant: null, closed: false,
                 stage: { stageId: "lobby", stageName: "", controls: "" },
                 reportGuestStatus: request.headers["x-nawaba-guest-status"] === "1" };
             rooms.set(id, room);
             send(room, socket, { type: "host_hello", inviteUrl: `${origin()}/#room=${id}&join=${joinKey}`,
-                guestStatusSupported: room.reportGuestStatus, guestConnected: false });
+                guestStatusSupported: room.reportGuestStatus, guestConnected: false, participantCount: 0 });
             log(`[room ${id}] created`);
             socket.on("message", (data, binary) => {
                 if (room.closed || room.host !== socket) return;
                 const message = parse(socket, data, binary, room);
                 if (!message) return;
                 if (message.type === "approve_control") {
+                    const owner = room.pending && participant(room, room.pending.controllerId);
                     if (!matches(message, room.pending) || room.grant ||
-                        !room.controller || room.controller.readyState !== WebSocket.OPEN) return;
+                        !owner || owner.readyState !== WebSocket.OPEN) return;
                     const approved = room.pending;
                     room.pending = null;
                     room.grant = { ...approved, grantId: randomUUID(), active: false,
                         offerSent: false, answerSent: false, lastVideoAt: 0,
                         approvedAt: performance.now(), startAt: null, lastInputAt: 0, lastSequence: -1 };
                     const notification = { type: "control_granted", ...ids(room.grant) };
-                    if (!send(room, socket, notification) || !send(room, room.controller, notification))
+                    if (!send(room, socket, notification) || !send(room, owner, notification))
                         revoke(room, "connection_lost");
                     return;
                 }
@@ -203,7 +217,8 @@ function createApplication(options = {}) {
                     if (!matchesGrant(room, message) || room.grant.offerSent) return;
                     if (!validSdp(message.sdp)) { revoke(room, "video_failed"); return; }
                     room.grant.offerSent = true;
-                    if (!send(room, room.controller, { type: "video_offer", ...ids(room.grant), sdp: message.sdp }))
+                    if (!send(room, participant(room, room.grant.controllerId),
+                        { type: "video_offer", ...ids(room.grant), sdp: message.sdp }))
                         revoke(room, "connection_lost");
                     return;
                 }
@@ -222,7 +237,7 @@ function createApplication(options = {}) {
                         return;
                     }
                     room.stage = { stageId, stageName, controls };
-                    send(room, room.controller, { type: "stage_status", ...room.stage });
+                    broadcast(room, { type: "stage_status", ...room.stage });
                     return;
                 }
                 if (message.type === "revoke_control") {
@@ -251,7 +266,7 @@ function createApplication(options = {}) {
             socket.close(1008, "Invalid controller connection");
             return;
         }
-        // Unauthenticated sockets do not occupy a room's guest slot.
+        // Unauthenticated sockets do not occupy a participant slot.
         const authTimer = setTimeout(() => socket.close(1008, "Authentication timeout"), authTimeout);
         authTimer.unref();
         socket.once("close", () => clearTimeout(authTimer));
@@ -266,19 +281,28 @@ function createApplication(options = {}) {
                 socket.close(1008, "Invalid participant link");
                 return;
             }
-            if (room.controller) { socket.close(1008, "Controller already connected"); return; }
-            room.controller = socket;
-            const controllerId = randomUUID();
+            if (room.participants.size >= maxParticipants) { socket.close(1008, "Room full"); return; }
+            // One ID per connection, bound to this socket and room. Nicknames never identify anyone.
+            let controllerId;
+            do { controllerId = randomUUID(); } while (room.participants.has(controllerId));
+            room.participants.set(controllerId, socket);
             send(room, socket, { type: "controller_hello", controllerId, hostOnline: true });
             send(room, socket, { type: "stage_status", ...room.stage });
-            notifyGuestStatus(room, true);
-            log(`[room ${room.id}] guest connected`);
+            notifyParticipants(room);
+            log(`[room ${room.id}] participant joined (${room.participants.size})`);
+            // Every grant-scoped message must come from the connection that owns it.
+            const ownsGrant = message => matchesGrant(room, message) && room.grant.controllerId === controllerId;
             socket.on("message", (data, binary) => {
-                if (room.closed || room.controller !== socket) return;
+                if (room.closed || room.participants.get(controllerId) !== socket) return;
                 const message = parse(socket, data, binary, room);
                 if (!message) return;
                 if (message.type === "request_control") {
-                    if (room.pending || room.grant) return;
+                    if (room.pending?.controllerId === controllerId || room.grant?.controllerId === controllerId) return;
+                    // Step 2 keeps one request/grant at a time. The FIFO list arrives in step 3.
+                    if (room.pending || room.grant) {
+                        send(room, socket, { type: "request_rejected", reason: "busy" });
+                        return;
+                    }
                     const nickname = typeof message.nickname === "string" ? message.nickname.trim() : "";
                     if (!nickname || nickname.length > 20 || !room.host ||
                         room.host.readyState !== WebSocket.OPEN) {
@@ -295,7 +319,7 @@ function createApplication(options = {}) {
                     return;
                 }
                 if (message.type === "video_answer") {
-                    if (!matchesGrant(room, message) || !room.grant.offerSent || room.grant.answerSent) return;
+                    if (!ownsGrant(message) || !room.grant.offerSent || room.grant.answerSent) return;
                     if (!validSdp(message.sdp)) { revoke(room, "video_failed"); return; }
                     room.grant.answerSent = true;
                     if (!send(room, room.host, { type: "video_answer", ...ids(room.grant), sdp: message.sdp }))
@@ -303,7 +327,7 @@ function createApplication(options = {}) {
                     return;
                 }
                 if (message.type === "video_ready") {
-                    if (!matchesGrant(room, message) || !room.grant.answerSent ||
+                    if (!ownsGrant(message) || !room.grant.answerSent ||
                         room.grant.active || room.grant.startAt !== null) return;
                     // Browser emits this only after a video frame reaches its compositor.
                     const now = performance.now();
@@ -315,23 +339,24 @@ function createApplication(options = {}) {
                     return;
                 }
                 if (message.type === "video_alive") {
-                    if (!matchesGrant(room, message) || room.grant.startAt === null) return;
+                    if (!ownsGrant(message) || room.grant.startAt === null) return;
                     room.grant.lastVideoAt = performance.now();
                     if (!send(room, room.host, { type: "video_alive", ...ids(room.grant) }))
                         revoke(room, "connection_lost");
                     return;
                 }
                 if (message.type === "video_failed") {
-                    if (matchesGrant(room, message)) revoke(room, "video_failed");
+                    if (ownsGrant(message)) revoke(room, "video_failed");
                     return;
                 }
                 if (message.type === "release_control") {
-                    if (matches(message, room.pending)) cancelPending(room, "controller_stopped");
-                    if (matchesGrant(room, message)) revoke(room, "controller_stopped");
+                    if (matches(message, room.pending) && room.pending.controllerId === controllerId)
+                        cancelPending(room, "controller_stopped");
+                    if (ownsGrant(message)) revoke(room, "controller_stopped");
                     return;
                 }
                 if (message.type !== "input") { socket.close(1008, "Invalid controller message"); return; }
-                if (!matchesGrant(room, message) || !room.grant.active || room.grant.controllerId !== controllerId) return;
+                if (!ownsGrant(message) || !room.grant.active) return;
                 const jump = message.jump ?? 0;
                 const look = message.look ?? 0;
                 if (!Number.isSafeInteger(message.sequence) || message.sequence < 0 ||
@@ -350,12 +375,13 @@ function createApplication(options = {}) {
                     sequence: message.sequence, x: message.x, y: message.y, jump, look })) revoke(room, "host_disconnected");
             });
             socket.on("close", () => {
-                if (room.closed || room.controller !== socket) return;
-                room.controller = null;
-                cancelPending(room, "controller_disconnected");
-                revoke(room, "controller_disconnected");
-                notifyGuestStatus(room, false);
-                log(`[room ${room.id}] guest disconnected`);
+                if (room.closed || room.participants.get(controllerId) !== socket) return;
+                room.participants.delete(controllerId);
+                // Only this participant's own request or grant ends; the others stay connected.
+                if (room.pending?.controllerId === controllerId) cancelPending(room, "controller_disconnected");
+                if (room.grant?.controllerId === controllerId) revoke(room, "controller_disconnected");
+                notifyParticipants(room);
+                log(`[room ${room.id}] participant left (${room.participants.size})`);
             });
         });
     });
@@ -373,7 +399,8 @@ function createApplication(options = {}) {
                 room.grant.active = true;
                 room.grant.lastInputAt = now;
                 const notification = { type: "control_started", ...ids(room.grant) };
-                if (!send(room, room.host, notification) || !send(room, room.controller, notification))
+                if (!send(room, room.host, notification) ||
+                    !send(room, participant(room, room.grant.controllerId), notification))
                     revoke(room, "connection_lost");
             }
             if (room.grant && room.grant.active && now - room.grant.lastInputAt >= inputTimeout)
@@ -400,7 +427,7 @@ if (require.main === module) {
         const config = readServerConfig();
         const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
         app.server.listen(config.port, config.listenHost, () => {
-            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 5)`);
+            console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 6)`);
             console.log("Guest status notifications enabled for supported Unity clients.");
             console.log("Each host creates a room. Copy its invite from the Unity multiplayer lobby.");
         });
