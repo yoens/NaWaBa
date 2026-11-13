@@ -26,6 +26,9 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     // Opening shot from the castle gate back to the start (host can skip with Space).
     [SerializeField] private bool playIntro = true;
 
+    [Header("Next stage (from Resources/NaWaBaStages; the run ends here if this is the last)")]
+    [SerializeField, Min(0f)] private float nextStageDelay = 3f;
+
     [Header("After the run")]
     [SerializeField] private string newGameSceneName = "Stage_Dodge";
     [SerializeField] private string lobbySceneName = "Lobby";
@@ -36,10 +39,15 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     private bool initialized;
     private bool usesPersistentGateway;
     private bool cleared;
+    private bool advancing;          // cleared, and a next stage follows (stage 3 ...)
+    private float advanceLeft;
+    private string nextScene = "";
     private string[] resultLines;
     private RemoteInputSource stageRemoteInputSource;
     private bool useCheckpoints = true;
     private StageIntroCamera intro;
+    private GameObject courseRoot;
+    private const string CourseRootPrefix = "ClimbCourse (built)";
     private bool IntroPlaying => intro != null && intro.IsPlaying;
     private int checkpointOrder;
     private GUIStyle titleStyle, lineStyle, buttonStyle, labelStyle;
@@ -80,6 +88,8 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
 
         // Difficulty chosen in the lobby: label on the web page, checkpoints on or off.
         NaWaBaDifficulty difficulty = GameSession.Difficulty;
+        SelectCourse(difficulty != null ? difficulty.CourseName : "");
+        ClimbMover.SpeedScale = difficulty != null ? difficulty.MoverSpeed : 1f;
         if (difficulty != null)
         {
             useCheckpoints = difficulty.UseCheckpoints;
@@ -97,6 +107,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
         if (!initialized) return;
 
         cleared = false;
+        advancing = false;
         resultLines = null;
         checkpointOrder = 0;
         actor.ClearRespawnPoint();
@@ -135,6 +146,25 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
         StartIntro();
     }
 
+    // Several built courses can be in the scene ("ClimbCourse (built) <asset name>"): turn on
+    // the one the difficulty names (or the first) and turn the others off.
+    private void SelectCourse(string wanted)
+    {
+        var courses = new List<GameObject>();
+        foreach (GameObject root in gameObject.scene.GetRootGameObjects())
+            if (root.name.StartsWith(CourseRootPrefix)) courses.Add(root);
+        if (courses.Count == 0) return;
+
+        courseRoot = null;
+        if (!string.IsNullOrEmpty(wanted))
+            courseRoot = courses.Find(c => c.name.EndsWith(" " + wanted) || c.name == wanted);
+        if (courseRoot == null) courseRoot = courses.Find(c => c.activeSelf) ?? courses[0];
+        foreach (GameObject course in courses) course.SetActive(course == courseRoot);
+        Debug.Log($"[Climb] course: {courseRoot.name}" +
+            (!string.IsNullOrEmpty(wanted) && !courseRoot.name.EndsWith(wanted)
+                ? $" ('{wanted}' is not built in this scene)" : ""), this);
+    }
+
     private void StartIntro()
     {
         if (!playIntro) return;
@@ -149,10 +179,11 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     private List<Vector3> BuildIntroRoute()
     {
         var route = new List<Vector3>();
-        ClimbGoal goal = FindInScene<ClimbGoal>();
+        ClimbGoal goal = courseRoot != null ? courseRoot.GetComponentInChildren<ClimbGoal>() : null;
+        if (goal == null) goal = FindInScene<ClimbGoal>();
         if (goal != null) route.Add(goal.transform.position);
 
-        GameObject built = GameObject.Find("ClimbCourse (built)");
+        GameObject built = courseRoot;
         if (built != null && built.scene == gameObject.scene)
         {
             var platforms = new List<Transform>();
@@ -191,6 +222,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             actor.InputLocked = false;
         }
         if (intro != null) intro.Skip();
+        ClimbMover.Paused = false;
         handoff?.Reset();
     }
 
@@ -209,7 +241,23 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             gateway.AllowRemoteApproval = gateway.isActiveAndEnabled && !cleared &&
                 inputRouter.isActiveAndEnabled;
 
+        if (advancing)
+        {
+            actor.Frozen = true;
+            advanceLeft -= deltaTime;
+            SetStatus(advanceLeft > 0f ? $"CLEAR!\nNEXT STAGE IN {Mathf.CeilToInt(advanceLeft)}" : "LOADING...");
+            if (advanceLeft <= 0f && !StageSceneLoader.IsLoading &&
+                !StageSceneLoader.Load(nextScene, this, this, carryControl: true))
+            {
+                advancing = false;   // could not load: end the run here instead
+                RunRecord.Finish();
+                resultLines = RunRecord.SummaryLines();
+            }
+            return;
+        }
+
         actor.Frozen = handoff.Paused || cleared || IntroPlaying;
+        ClimbMover.Paused = handoff.Paused || IntroPlaying;
         if (!cleared && !handoff.Paused && !IntroPlaying)
             RunRecord.AddControlTime(gateway, deltaTime);
 
@@ -279,6 +327,20 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
         if (!initialized || cleared || handoff.Paused || IntroPlaying) return;
         cleared = true;
         RunRecord.Player player = RunRecord.NoteClear(gateway, stageName);
+
+        nextScene = StageSceneLoader.NextStage(gameObject.scene.name, "");
+        if (StageSceneLoader.CanLoad(nextScene))
+        {
+            // Not the last stage: move on, the controller keeps their turn.
+            advancing = true;
+            advanceLeft = nextStageDelay;
+            actor.Frozen = true;
+            Debug.Log("[Climb] CLEAR by " + player.Name + " -> " + nextScene, this);
+            if (usesPersistentGateway)
+                gateway.ReportRunEvent("stage_cleared", $"{player.Name}님이 {stageName} 클리어! 다음 스테이지로 이동합니다");
+            return;
+        }
+
         RunRecord.Finish();
         resultLines = RunRecord.SummaryLines();
         actor.Frozen = true;
@@ -295,7 +357,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     private void StartNewGame()
     {
         // Stage 1 begins a new run (RunRecord resets there).
-        StageSceneLoader.Load(newGameSceneName, this, this);
+        StageSceneLoader.Load(StageSceneLoader.FirstStage(newGameSceneName), this, this);
     }
 
     private void ReturnToLobby()

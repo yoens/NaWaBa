@@ -49,7 +49,8 @@ public class LobbyController : MonoBehaviour
     public void StartStage()
     {
         if (!isActiveAndEnabled || !CanStartStage) return;
-        OpenScene(stageSceneName);
+        // A new run always starts at the first stage of the stage list.
+        OpenScene(StageSceneLoader.FirstStage(stageSceneName));
     }
 
     public void BackToMainMenu()

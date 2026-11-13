@@ -280,9 +280,21 @@ public class RemoteInputGateway : MonoBehaviour
         }
     }
 
+    // STUN/TURN servers sent by the server (host_hello). The video sender uses them.
+    [Serializable]
+    public class IceServer
+    {
+        public string[] urls;
+        public string username;
+        public string credential;
+    }
+
+    public IceServer[] IceServers { get; private set; }
+
     [Serializable]
     private class Message
     {
+        public IceServer[] iceServers;
         public int protocolVersion = ProtocolVersion;
         public string type;
         public string roomId;
@@ -669,6 +681,8 @@ public class RemoteInputGateway : MonoBehaviour
                         throw new InvalidOperationException("Invalid participant URL from server.");
                     RoomId = message.roomId;
                     inviteUrl = message.inviteUrl;
+                    IceServers = message.iceServers != null && message.iceServers.Length > 0
+                        ? message.iceServers : null;
                     guestStatusSupported = message.guestStatusSupported;
                     guestConnected = guestStatusSupported && message.guestConnected;
                     participantCount = guestConnected ? Mathf.Max(0, message.participantCount) : 0;

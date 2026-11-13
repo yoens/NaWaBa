@@ -4,7 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID, randomBytes, timingSafeEqual } = require("node:crypto");
-const { readServerConfig } = require("./server-config.cjs");
+const { readServerConfig, sanitizeIceServers } = require("./server-config.cjs");
 
 // Protocol 8: update server.cjs, index.html and RemoteInputGateway.cs together.
 // Each room belongs to one live host connection. No client can select another
@@ -30,6 +30,9 @@ function createApplication(options = {}) {
     // Web participants per room (watchers + the one controller). Step 2: no simultaneous control.
     const maxParticipants = options.maxParticipants ?? 8;
     const log = options.log || console.log;
+    // STUN/TURN servers handed to both the Unity host and the browsers (same list for both).
+    const iceServers = sanitizeIceServers(options.iceServers) ||
+        [{ urls: ["stun:stun.l.google.com:19302"] }];
     const rooms = new Map();
 
 
@@ -208,7 +211,8 @@ function createApplication(options = {}) {
                 reportGuestStatus: request.headers["x-nawaba-guest-status"] === "1" };
             rooms.set(id, room);
             send(room, socket, { type: "host_hello", inviteUrl: `${origin()}/#room=${id}&join=${joinKey}`,
-                guestStatusSupported: room.reportGuestStatus, guestConnected: false, participantCount: 0 });
+                guestStatusSupported: room.reportGuestStatus, guestConnected: false, participantCount: 0,
+                iceServers });
             log(`[room ${id}] created`);
             socket.on("message", (data, binary) => {
                 if (room.closed || room.host !== socket) return;
@@ -347,7 +351,7 @@ function createApplication(options = {}) {
             let controllerId;
             do { controllerId = randomUUID(); } while (room.participants.has(controllerId));
             room.participants.set(controllerId, socket);
-            send(room, socket, { type: "controller_hello", controllerId, hostOnline: true });
+            send(room, socket, { type: "controller_hello", controllerId, hostOnline: true, iceServers });
             send(room, socket, { type: "stage_status", ...room.stage });
             notifyParticipants(room);
             log(`[room ${room.id}] participant joined (${room.participants.size})`);
@@ -483,7 +487,10 @@ function createApplication(options = {}) {
 if (require.main === module) {
     try {
         const config = readServerConfig();
-        const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin });
+        const app = createApplication({ hostKey: config.hostKey, publicOrigin: config.publicOrigin,
+            iceServers: config.iceServers });
+        const relay = config.iceServers && config.iceServers.some(s => s.urls.some(u => !u.startsWith("stun:")));
+        console.log(`[NaWaBa] ICE: ${relay ? "STUN + TURN relay configured" : "STUN only (no TURN relay)"}`);
         app.server.listen(config.port, config.listenHost, () => {
             console.log(`[server] listening on ${config.listenHost}:${config.port} (protocol 8)`);
             console.log("Guest status notifications enabled for supported Unity clients.");

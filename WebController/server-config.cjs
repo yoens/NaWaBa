@@ -34,6 +34,40 @@ function readServerConfig(env = process.env, projectRoot = path.resolve(__dirnam
     if (typeof hostKey !== "string" || !/^[a-f0-9]{64}$/.test(hostKey)) {
         throw new Error("NAWABA_HOST_KEY must contain the existing 64-character host key.");
     }
-    return { hostKey, publicOrigin, port, listenHost: deployed ? "0.0.0.0" : "127.0.0.1" };
+    const iceServers = parseIceServers(env.NAWABA_ICE_SERVERS);
+    return { hostKey, publicOrigin, port, listenHost: deployed ? "0.0.0.0" : "127.0.0.1", iceServers };
 }
-module.exports = { readServerConfig };
+
+// Optional STUN/TURN list for WebRTC, e.g. (one line in the Render environment variable)
+// NAWABA_ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302"]},
+//   {"urls":["turn:turn.example.com:3478"],"username":"user","credential":"secret"}]
+// Unset = Google STUN only. Invalid entries are dropped; credentials are never logged.
+function parseIceServers(text) {
+    if (text === undefined || text === "") return null;
+    let list;
+    try { list = JSON.parse(text); } catch { throw new Error("NAWABA_ICE_SERVERS must be a JSON array."); }
+    const clean = sanitizeIceServers(list);
+    if (!clean) throw new Error("NAWABA_ICE_SERVERS has no valid stun:/turn: entries.");
+    return clean;
+}
+
+function sanitizeIceServers(list) {
+    if (!Array.isArray(list)) return null;
+    const short = value => typeof value === "string" && value.length > 0 && value.length <= 256;
+    const out = [];
+    for (const entry of list.slice(0, 6)) {
+        if (!entry || typeof entry !== "object") continue;
+        const urls = (Array.isArray(entry.urls) ? entry.urls : [entry.urls])
+            .filter(url => short(url) && /^(stun|turn|turns):[^\s]+$/.test(url)).slice(0, 4);
+        if (urls.length === 0) continue;
+        const server = { urls };
+        if (urls.some(url => !url.startsWith("stun:"))) {
+            if (!short(entry.username) || !short(entry.credential)) continue; // TURN needs a login
+            server.username = entry.username;
+            server.credential = entry.credential;
+        }
+        out.push(server);
+    }
+    return out.length ? out : null;
+}
+module.exports = { readServerConfig, sanitizeIceServers };

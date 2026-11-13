@@ -15,7 +15,9 @@ using UnityEngine;
 public static class ClimbCourseBuilder
 {
     private const string MenuPath = "NaWaBa/등반 코스 만들기 (Stage_Climb)";
-    private const string CourseAssetPath = "Assets/Data/ClimbCourse_Default.asset";
+    // Built when nothing else is selected. Select another ClimbCourse asset (e.g. the old
+    // ClimbCourse_Default) in the Project window before running the menu to build that one.
+    private const string CourseAssetPath = "Assets/Data/ClimbCourse_Long.asset";
     private const string MaterialFolder = "Assets/Materials/NaWaBa";
     private const string RootName = "ClimbCourse (built)";
     private const int IgnoreRaycastLayer = 2;
@@ -83,8 +85,19 @@ public static class ClimbCourseBuilder
         int undoGroup = Undo.GetCurrentGroup();
         Undo.SetCurrentGroupName("Build Climb Course");
 
-        GameObject previous = GameObject.Find(RootName);
-        if (previous != null) Undo.DestroyObjectImmediate(previous);
+        // Several courses can live in the scene (one per difficulty): "ClimbCourse (built) <asset>".
+        // Rebuilding replaces only this course's root (and an old unnamed root from before).
+        string rootName = $"{RootName} {course.name}";
+        foreach (GameObject sceneRoot in actor.gameObject.scene.GetRootGameObjects())
+        {
+            if (sceneRoot.name == rootName || sceneRoot.name == RootName)
+                Undo.DestroyObjectImmediate(sceneRoot);
+            else if (sceneRoot.name.StartsWith(RootName))
+            {
+                Undo.RecordObject(sceneRoot, "Hide other course");
+                sceneRoot.SetActive(false);   // the stage turns on the course the difficulty asks for
+            }
+        }
         foreach (string oldName in OldRoots)
         {
             GameObject old = GameObject.Find(oldName);
@@ -93,7 +106,7 @@ public static class ClimbCourseBuilder
             old.SetActive(false);
         }
 
-        var root = new GameObject(RootName);
+        var root = new GameObject(rootName);
         Undo.RegisterCreatedObjectUndo(root, "Build Climb Course");
         SceneManagerMoveToActorScene(root, actor);
 
@@ -121,6 +134,16 @@ public static class ClimbCourseBuilder
             SetLayer(instance, groundLayer);
 
             Footprint placed = Place(instance, step, last, heading, direction);
+            Decorate(instance, placed, step, new System.Random(course.decorSeed + i * 31));
+            string moving = "";
+            if (step.moveDistance > 0f)
+            {
+                ClimbMover mover = Undo.AddComponent<ClimbMover>(instance);
+                mover.Configure(Quaternion.Euler(0f, heading, 0f) * Vector3.right * step.moveDistance,
+                    step.movePeriod, i * 0.17f);
+                EditorUtility.SetDirty(mover);
+                moving = $"  (moving ±{step.moveDistance:0.0}m)";
+            }
 
             // Can the player make this jump? (edge to edge, landing "rise" metres higher)
             float rise = placed.top - last.top;
@@ -128,7 +151,7 @@ public static class ClimbCourseBuilder
             float reach = disc < 0f ? -1f : moveSpeed * (jumpSpeed + Mathf.Sqrt(disc)) / gravity;
             float margin = reach - step.gap;
             string line = $"{i + 1:00} {step.prefab.name,-28} gap {step.gap:0.0} rise {rise:0.0} " +
-                $"top {placed.top:0.0}m  margin {margin:0.00}m";
+                $"top {placed.top:0.0}m  margin {margin:0.00}m{moving}";
             if (margin < 0f) { impossible++; line += "  <-- 점프 불가!"; }
             else if (margin < course.minimumMargin) { warnings++; line += "  <-- 아슬아슬"; }
             report.Add(line);
@@ -141,7 +164,7 @@ public static class ClimbCourseBuilder
         Material stone = GetMaterial("GateStone", course.stoneColor);
         Material door = GetMaterial("GateDoor", course.doorColor);
         BuildGate(root, last, course, stone, door);
-        MoveGoal(last);
+        CreateGoal(root, last);
         if (course.buildCloudLayer)
             BuildClouds(root, courseBounds, course.cloudHeight, GetMaterial("Clouds", course.cloudColor));
 
@@ -171,7 +194,7 @@ public static class ClimbCourseBuilder
         float heading, int groundLayer)
     {
         Vector3 feet = actor.transform.position;
-        GameObject prefab = course.startPadPrefab != null ? course.startPadPrefab : LoadPrefab(Platform);
+        GameObject prefab = course.startPadPrefab != null ? course.startPadPrefab : FindPrefab("block-grass-large");
         if (prefab == null)
         {
             Debug.LogWarning("[ClimbCourse] no start pad prefab; the player needs a floor at the start.");
@@ -207,60 +230,173 @@ public static class ClimbCourseBuilder
         float heading, Vector3 direction)
     {
         Transform t = instance.transform;
-        BoxCollider box = instance.GetComponentInChildren<BoxCollider>();
+        EnsureCollider(instance);
         Vector3 baseScale = t.localScale;
 
-        // 1) Scale so the top's narrow side equals the requested width.
+        // 1) Measure standing at the origin, unrotated (local box relative to the pivot).
         t.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
-        Footprint raw = box != null ? Measure(box) : MeasureRenderers(instance);
-        float narrowSide = Mathf.Max(0.01f, 2f * Mathf.Min(raw.halfX, raw.halfZ));
-        t.localScale = baseScale * (step.width / narrowSide);
+        MeasureLocal(instance, out Vector3 center, out Vector3 half);
 
-        // 2) Turn to the course heading and measure again.
-        t.rotation = Quaternion.Euler(0f, heading, 0f);
-        Footprint now = box != null ? Measure(box) : MeasureRenderers(instance);
+        // 2) Scale so the top's narrow side equals the requested width.
+        float factor = step.width / Mathf.Max(0.01f, 2f * Mathf.Min(half.x, half.z));
+        t.localScale = baseScale * factor;
+        center *= factor;
+        half *= factor;
 
-        // 3) Move: centre "gap" past the previous edge, top at the target height.
-        float distance = last.Extent(direction) + step.gap + now.Extent(direction);
+        // 3) Turn to the course heading; centre "gap" past the previous edge, top at the target height.
+        Quaternion rotation = Quaternion.Euler(0f, heading, 0f);
+        var placed = new Footprint { halfX = half.x, halfZ = half.z, yaw = heading };
+        float distance = last.Extent(direction) + step.gap + placed.Extent(direction);
         Vector3 targetCenter = last.center + direction * distance;
         float targetTop = last.top + step.rise;
-        Vector3 offset = new Vector3(targetCenter.x - now.center.x, targetTop - now.top,
-            targetCenter.z - now.center.z);
-        t.position += offset;
+        Vector3 offset = rotation * center;
+        t.SetPositionAndRotation(
+            new Vector3(targetCenter.x - offset.x, targetTop - (center.y + half.y), targetCenter.z - offset.z),
+            rotation);
 
-        now.center += offset;
-        now.center.y = targetTop;
-        now.top = targetTop;
-        return now;
+        placed.center = new Vector3(targetCenter.x, targetTop, targetCenter.z);
+        placed.top = targetTop;
+        return placed;
     }
 
-    // Box collider in world space (assumes only a yaw rotation).
-    private static Footprint Measure(BoxCollider box)
+    // Kenney models from the kit come without colliders: give every mesh a mesh collider
+    // (exact shape, so hexagons and narrow blocks have no invisible edges).
+    private static void EnsureCollider(GameObject instance)
     {
-        Transform t = box.transform;
-        Vector3 scale = t.lossyScale;
-        Vector3 center = t.TransformPoint(box.center);
-        float halfY = Mathf.Abs(box.size.y * scale.y) * 0.5f;
-        return new Footprint
+        if (instance.GetComponentInChildren<Collider>() != null) return;
+        foreach (MeshFilter filter in instance.GetComponentsInChildren<MeshFilter>())
         {
-            center = center,
-            halfX = Mathf.Abs(box.size.x * scale.x) * 0.5f,
-            halfZ = Mathf.Abs(box.size.z * scale.z) * 0.5f,
-            top = center.y + halfY,
-            yaw = t.eulerAngles.y
-        };
+            if (filter.sharedMesh == null) continue;
+            MeshCollider meshCollider = Undo.AddComponent<MeshCollider>(filter.gameObject);
+            meshCollider.sharedMesh = filter.sharedMesh;
+        }
     }
 
-    private static Footprint MeasureRenderers(GameObject instance)
+    // Box around the platform while it stands at the origin unrotated: centre and half size.
+    // Uses its Box Collider when it has one, otherwise the meshes.
+    private static void MeasureLocal(GameObject instance, out Vector3 center, out Vector3 half)
     {
+        BoxCollider box = instance.GetComponentInChildren<BoxCollider>();
+        if (box != null)
+        {
+            Vector3 scale = box.transform.lossyScale;
+            center = box.transform.TransformPoint(box.center);
+            half = new Vector3(Mathf.Abs(box.size.x * scale.x), Mathf.Abs(box.size.y * scale.y),
+                Mathf.Abs(box.size.z * scale.z)) * 0.5f;
+            return;
+        }
         Renderer[] renderers = instance.GetComponentsInChildren<Renderer>();
         if (renderers.Length == 0)
-            return new Footprint { center = instance.transform.position, halfX = 0.5f, halfZ = 0.5f,
-                top = instance.transform.position.y, yaw = instance.transform.eulerAngles.y };
+        {
+            center = Vector3.up * 0.5f;
+            half = Vector3.one * 0.5f;
+            return;
+        }
         Bounds b = renderers[0].bounds;
         foreach (Renderer r in renderers) b.Encapsulate(r.bounds);
-        return new Footprint { center = b.center, halfX = b.extents.x, halfZ = b.extents.z,
-            top = b.max.y, yaw = instance.transform.eulerAngles.y };
+        center = b.center;
+        half = b.extents;
+    }
+
+    // ---------- decoration ----------
+
+    private static readonly Dictionary<string, GameObject> prefabCache = new Dictionary<string, GameObject>();
+
+    private static GameObject FindPrefab(string exactName)
+    {
+        if (prefabCache.TryGetValue(exactName, out GameObject cached) && cached != null) return cached;
+        // Prefer the Kenney kit copies in "New Folder" over older edited prefabs of the same name.
+        string best = null;
+        foreach (string guid in AssetDatabase.FindAssets(exactName + " t:Prefab"))
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
+            if (!path.EndsWith(".prefab") || System.IO.Path.GetFileNameWithoutExtension(path) != exactName) continue;
+            if (best == null || path.Contains("/New Folder/")) best = path;
+        }
+        if (best == null)
+        {
+            Debug.LogWarning("[ClimbCourse] prefab not found: " + exactName);
+            return null;
+        }
+        var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(best);
+        prefabCache[exactName] = prefab;
+        return prefab;
+    }
+
+    // Props on the platform top, kept to the sides so the landing spot stays clear.
+    private static void Decorate(GameObject platform, Footprint on, ClimbCourse.Step step, System.Random random)
+    {
+        if (step.decor == ClimbCourse.Decor.None || step.moveDistance > 0f) return;
+        if (Mathf.Min(on.halfX, on.halfZ) < 0.9f) return;
+        bool snow = step.prefab.name.Contains("snow");
+        Quaternion rotation = Quaternion.Euler(0f, on.yaw, 0f);
+
+        if (step.decor == ClimbCourse.Decor.Fence)
+        {
+            GameObject fence = FindPrefab("fence-straight");
+            if (fence == null) return;
+            float side = random.NextDouble() < 0.5 ? -1f : 1f;
+            int count = Mathf.Max(1, Mathf.FloorToInt(on.halfZ * 2f / 1.2f));
+            for (int i = 0; i < count; i++)
+            {
+                float z = -on.halfZ + 1.2f * (i + 0.5f) + (on.halfZ * 2f - 1.2f * count) * 0.5f;
+                // fence-straight stands along X near its +Z edge: turn it to run along the heading.
+                Prop(platform, fence, on, rotation * Quaternion.Euler(0f, side > 0f ? 90f : -90f, 0f),
+                    new Vector3(side * (on.halfX - 0.55f), 0f, z), 1.2f, true);
+            }
+            return;
+        }
+
+        string[] names;
+        Vector2 size;
+        int count2;
+        bool byHeight;
+        switch (step.decor)
+        {
+            case ClimbCourse.Decor.Trees:
+                names = snow ? new[] { "tree-pine-snow", "tree-snow", "tree-pine-snow-small" }
+                             : new[] { "tree-pine", "tree", "tree-pine-small" };
+                size = new Vector2(2.2f, 3.4f); count2 = 1 + random.Next(2); byHeight = true;
+                break;
+            case ClimbCourse.Decor.Flowers:
+                names = snow ? new[] { "rocks", "stones" } : new[] { "flowers", "flowers-tall", "grass", "mushrooms", "plant" };
+                size = new Vector2(0.7f, 1.1f); count2 = 2 + random.Next(3); byHeight = false;
+                break;
+            default:
+                names = new[] { "rocks", "stones", "rocks" };
+                size = new Vector2(0.8f, 1.3f); count2 = 1 + random.Next(2); byHeight = false;
+                break;
+        }
+        for (int i = 0; i < count2; i++)
+        {
+            GameObject prefab = FindPrefab(names[random.Next(names.Length)]);
+            if (prefab == null) continue;
+            float side = i % 2 == 0 ? -1f : 1f;
+            var local = new Vector3(side * on.halfX * Lerp(random, 0.55f, 0.78f), 0f,
+                on.halfZ * Lerp(random, -0.6f, 0.6f));
+            Prop(platform, prefab, on, rotation * Quaternion.Euler(0f, Lerp(random, 0f, 360f), 0f),
+                local, Lerp(random, size.x, size.y), !byHeight);
+        }
+    }
+
+    private static float Lerp(System.Random random, float a, float b) => Mathf.Lerp(a, b, (float)random.NextDouble());
+
+    // One prop on the platform top; scaled to a footprint (byFootprint) or a height.
+    private static void Prop(GameObject platform, GameObject prefab, Footprint on, Quaternion rotation,
+        Vector3 localOffset, float size, bool byFootprint)
+    {
+        var prop = (GameObject)PrefabUtility.InstantiatePrefab(prefab, platform.scene);
+        Undo.RegisterCreatedObjectUndo(prop, "Build Climb Course");
+        Transform t = prop.transform;
+        t.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+        MeasureLocal(prop, out _, out Vector3 half);
+        float factor = byFootprint
+            ? size / Mathf.Max(0.01f, 2f * Mathf.Max(half.x, half.z))
+            : size / Mathf.Max(0.01f, 2f * half.y);
+        t.localScale *= factor;
+        Quaternion heading = Quaternion.Euler(0f, on.yaw, 0f);
+        t.SetPositionAndRotation(on.center + heading * localOffset - Vector3.up * 0.02f, rotation);
+        t.SetParent(platform.transform, true);
     }
 
     // ---------- checkpoints, goal, gate ----------
@@ -279,67 +415,207 @@ public static class ClimbCourseBuilder
         go.AddComponent<ClimbCheckpoint>().Configure(order);
     }
 
-    private static void MoveGoal(Footprint final)
+    // The goal belongs to its course. Goals outside any built course (the old GateGoal) are
+    // turned off so only the active course's goal counts.
+    private static void CreateGoal(GameObject root, Footprint final)
     {
-        ClimbGoal goal = Object.FindFirstObjectByType<ClimbGoal>(FindObjectsInactive.Include);
-        if (goal == null)
+        foreach (ClimbGoal old in Object.FindObjectsByType<ClimbGoal>(FindObjectsInactive.Include, FindObjectsSortMode.None))
         {
-            var go = new GameObject("GateGoal");
-            Undo.RegisterCreatedObjectUndo(go, "Build Climb Course");
-            go.AddComponent<BoxCollider>();
-            goal = go.AddComponent<ClimbGoal>();
+            if (old.transform.root.name.StartsWith(RootName)) continue;
+            Undo.RecordObject(old.gameObject, "Disable old goal");
+            old.gameObject.SetActive(false);
         }
-        Transform t = goal.transform;
-        Undo.RecordObject(t, "Move goal");
-        Undo.RecordObject(goal.gameObject, "Move goal");
-        goal.gameObject.SetActive(true);
-        goal.gameObject.layer = IgnoreRaycastLayer;
+
+        var go = new GameObject("GateGoal");
+        Undo.RegisterCreatedObjectUndo(go, "Build Climb Course");
+        go.layer = IgnoreRaycastLayer;
+        go.transform.SetParent(root.transform, false);
         Quaternion rotation = Quaternion.Euler(0f, final.yaw, 0f);
         // In front of the gate (the gate stands at the far edge).
-        t.SetPositionAndRotation(
+        go.transform.SetPositionAndRotation(
             new Vector3(final.center.x, final.top + 1f, final.center.z) + rotation * new Vector3(0f, 0f, -final.halfZ * 0.15f),
             rotation);
-        t.localScale = Vector3.one;
-        BoxCollider box = goal.GetComponent<BoxCollider>();
-        if (box != null)
-        {
-            Undo.RecordObject(box, "Move goal");
-            box.isTrigger = true;
-            box.center = Vector3.zero;
-            box.size = new Vector3(final.halfX * 1.6f, 2f, final.halfZ * 1.2f);
-        }
+        BoxCollider box = go.AddComponent<BoxCollider>();
+        box.isTrigger = true;
+        box.size = new Vector3(final.halfX * 1.6f, 2f, final.halfZ * 1.2f);
+        go.AddComponent<ClimbGoal>();
     }
 
+    // Gatehouse + curtain wall at the far edge of the last platform. The wall rises out of the
+    // clouds, the closed doors wait for stage 3 (opening the gate).
     private static void BuildGate(GameObject root, Footprint final, ClimbCourse course, Material stone, Material door)
     {
+        Material roof = GetMaterial("CastleRoof", course.roofColor);
+        Material dark = GetMaterial("CastleStoneDark", course.stoneColor * 0.75f);
+        Mesh cone = GetConeMesh();
+
         var gate = new GameObject("CastleGate");
         Undo.RegisterCreatedObjectUndo(gate, "Build Climb Course");
         gate.transform.SetParent(root.transform, false);
         Quaternion rotation = Quaternion.Euler(0f, final.yaw, 0f);
         gate.transform.SetPositionAndRotation(
-            new Vector3(final.center.x, final.top, final.center.z) + rotation * new Vector3(0f, 0f, final.halfZ - 0.45f),
+            new Vector3(final.center.x, final.top, final.center.z) + rotation * new Vector3(0f, 0f, final.halfZ - 0.6f),
             rotation);
 
-        float width = Mathf.Clamp(Mathf.Min(course.gateWidth, final.halfX * 2f - 1.6f), 1.4f, 6f);
-        float height = Mathf.Max(2.2f, course.gateHeight);
-        const float pillar = 0.7f;
-        float half = width * 0.5f + pillar * 0.5f;
+        float opening = Mathf.Clamp(Mathf.Min(course.gateWidth, final.halfX * 2f - 0.6f), 1.6f, 6f);
+        float wallH = Mathf.Max(course.wallHeight, 4f);
+        float doorH = Mathf.Clamp(Mathf.Max(course.gateHeight, wallH * 0.6f), 2.4f, wallH - 1f);
+        float below = Mathf.Max(0f, course.wallDepth);
+        float halfLength = Mathf.Max(course.wallHalfLength, opening * 0.5f + 4f);
+        const float towerW = 2.4f, thick = 1.6f;
+        float towerH = wallH + 3f;
+        float towerX = opening * 0.5f + towerW * 0.5f;
 
-        Part(gate, "PillarL", new Vector3(-half, height * 0.5f, 0f), new Vector3(pillar, height, 0.9f), stone);
-        Part(gate, "PillarR", new Vector3(half, height * 0.5f, 0f), new Vector3(pillar, height, 0.9f), stone);
-        Part(gate, "Lintel", new Vector3(0f, height + 0.35f, 0f), new Vector3(width + pillar * 2f, 0.7f, 1f), stone);
-        for (int i = -1; i <= 1; i++)
-            Part(gate, "Battlement", new Vector3(i * (width * 0.5f + pillar * 0.5f), height + 0.95f, 0f),
-                new Vector3(0.5f, 0.5f, 0.9f), stone);
-        Part(gate, "DoorL", new Vector3(-width * 0.25f, height * 0.5f, 0.15f), new Vector3(width * 0.5f - 0.04f, height, 0.2f), door);
-        Part(gate, "DoorR", new Vector3(width * 0.25f, height * 0.5f, 0.15f), new Vector3(width * 0.5f - 0.04f, height, 0.2f), door);
+        // Gatehouse towers on both sides of the opening.
+        foreach (float side in new[] { -1f, 1f })
+        {
+            Part(gate, "GateTower", new Vector3(side * towerX, (towerH - below) * 0.5f, 0f),
+                new Vector3(towerW, towerH + below, 2.8f), stone);
+            Battlements(gate, side * towerX, towerH, towerW, 2.8f, stone);
+        }
+        // Wall above the opening, doors inside it.
+        Part(gate, "GateLintel", new Vector3(0f, (doorH + wallH) * 0.5f, 0f),
+            new Vector3(opening + 0.2f, wallH - doorH, thick), stone);
+        Part(gate, "GateArch", new Vector3(0f, doorH + 0.15f, -thick * 0.5f - 0.05f),
+            new Vector3(opening + 0.6f, 0.3f, 0.2f), dark);
+        Part(gate, "DoorL", new Vector3(-opening * 0.25f, doorH * 0.5f, 0.1f), new Vector3(opening * 0.5f - 0.04f, doorH, 0.25f), door);
+        Part(gate, "DoorR", new Vector3(opening * 0.25f, doorH * 0.5f, 0.1f), new Vector3(opening * 0.5f - 0.04f, doorH, 0.25f), door);
+        // The platform-level ground in front of the doors goes down into the wall's base.
+        Part(gate, "WallBase", new Vector3(0f, -below * 0.5f - 0.05f, 0f), new Vector3(opening + 0.2f, below, thick), stone);
+
+        // Curtain walls to each side with battlements, and round corner towers with roofs.
+        foreach (float side in new[] { -1f, 1f })
+        {
+            float inner = towerX + towerW * 0.5f;
+            float length = halfLength - inner;
+            float centerX = side * (inner + length * 0.5f);
+            Part(gate, "CurtainWall", new Vector3(centerX, (wallH - below) * 0.5f, 0.3f),
+                new Vector3(length, wallH + below, thick), stone);
+            Battlements(gate, centerX, wallH, length, thick, stone, 0.3f);
+
+            Vector3 corner = new Vector3(side * (halfLength + 1.2f), 0f, 0.3f);
+            RoundTower(gate, corner, 1.9f, wallH + 4.5f, below, stone, roof, cone);
+        }
+        // A banner over the gate.
+        Part(gate, "Banner", new Vector3(0f, doorH + (wallH - doorH) * 0.5f, -thick * 0.5f - 0.06f),
+            new Vector3(0.9f, (wallH - doorH) * 0.7f, 0.05f), GetMaterial("CastleFlag", course.flagColor));
+
+        if (course.buildCastle)
+            BuildCastle(gate.transform, course, wallH, below, stone, dark, roof, cone,
+                GetMaterial("CastleFlag", course.flagColor));
     }
 
-    private static void Part(GameObject parent, string name, Vector3 localPosition, Vector3 size, Material material)
+    // Big castle behind the wall (scenery only, no colliders).
+    private static void BuildCastle(Transform gate, ClimbCourse course, float wallH, float below,
+        Material stone, Material dark, Material roof, Mesh cone, Material flag)
     {
-        GameObject part = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        var castle = new GameObject("BackgroundCastle");
+        Undo.RegisterCreatedObjectUndo(castle, "Build Climb Course");
+        castle.transform.SetParent(gate, false);
+        castle.transform.localPosition = new Vector3(0f, 0f, course.castleDistance);
+        castle.transform.localScale = Vector3.one * course.castleScale;
+
+        float baseY = -below;
+        // Main hall and keep.
+        Part(castle, "Hall", new Vector3(0f, (wallH + 8f + baseY) * 0.5f, 0f), new Vector3(20f, wallH + 8f - baseY, 12f), stone, false);
+        Part(castle, "HallRoof", new Vector3(0f, wallH + 9.2f, 0f), new Vector3(20.6f, 2.4f, 12.6f), roof, false);
+        Battlements(castle, 0f, wallH + 8f, 20f, 12f, stone, 0f, false);
+        Part(castle, "Keep", new Vector3(0f, (wallH + 18f + baseY) * 0.5f, 3f), new Vector3(8f, wallH + 18f - baseY, 8f), dark, false);
+        Battlements(castle, 0f, wallH + 18f, 8f, 8f, dark, 3f, false);
+        RoundTower(castle, new Vector3(0f, 0f, 3f), 2.2f, wallH + 26f, below, stone, roof, cone, false);
+        Flag(castle, new Vector3(0f, wallH + 26f + 4.6f, 3f), flag);
+
+        // Four corner towers of different heights.
+        Vector3[] corners = { new Vector3(-11f, 0f, -6.5f), new Vector3(11f, 0f, -6.5f),
+                              new Vector3(-11f, 0f, 6.5f), new Vector3(11f, 0f, 6.5f) };
+        float[] heights = { wallH + 13f, wallH + 13f, wallH + 17f, wallH + 15f };
+        for (int i = 0; i < corners.Length; i++)
+        {
+            RoundTower(castle, corners[i], 2.6f, heights[i], below, stone, roof, cone, false);
+            if (i >= 2) Flag(castle, corners[i] + Vector3.up * (heights[i] + 5f), flag);
+        }
+        // Windows (dark slits) on the side that faces the player.
+        for (int i = -3; i <= 3; i++)
+            Part(castle, "Window", new Vector3(i * 2.6f, wallH + 4f, -6.06f), new Vector3(0.6f, 1.6f, 0.1f), dark, false);
+    }
+
+    private static void RoundTower(GameObject parent, Vector3 basePoint, float radius, float height, float below,
+        Material stone, Material roof, Mesh cone, bool collider = true)
+    {
+        // Unity's cylinder is 2 units tall, so the y scale is half the height.
+        float total = height + below;
+        Part(parent, "Tower", basePoint + new Vector3(0f, (height - below) * 0.5f, 0f),
+            new Vector3(radius * 2f, total * 0.5f, radius * 2f), stone, collider, PrimitiveType.Cylinder);
+        Part(parent, "TowerRing", basePoint + new Vector3(0f, height + 0.25f, 0f),
+            new Vector3(radius * 2.3f, 0.25f, radius * 2.3f), stone, collider, PrimitiveType.Cylinder);
+        if (cone == null) return;
+        var top = new GameObject("TowerRoof");
+        Undo.RegisterCreatedObjectUndo(top, "Build Climb Course");
+        top.transform.SetParent(parent.transform, false);
+        top.transform.localPosition = basePoint + new Vector3(0f, height + 0.5f, 0f);
+        top.transform.localScale = new Vector3(radius * 2.5f, radius * 2.2f, radius * 2.5f);
+        top.AddComponent<MeshFilter>().sharedMesh = cone;
+        top.AddComponent<MeshRenderer>().sharedMaterial = roof;
+    }
+
+    private static void Battlements(GameObject parent, float centerX, float topY, float length, float depth,
+        Material stone, float z = 0f, bool collider = true)
+    {
+        int count = Mathf.Max(2, Mathf.FloorToInt(length / 1.2f));
+        float step = length / count;
+        for (int i = 0; i < count; i += 2)
+        {
+            float x = centerX - length * 0.5f + step * (i + 0.5f);
+            Part(parent, "Merlon", new Vector3(x, topY + 0.4f, z), new Vector3(step, 0.8f, depth), stone, collider);
+        }
+    }
+
+    private static void Flag(GameObject parent, Vector3 basePoint, Material flag)
+    {
+        Part(parent, "FlagPole", basePoint + new Vector3(0f, 1.5f, 0f), new Vector3(0.12f, 3f, 0.12f), flag, false);
+        Part(parent, "Flag", basePoint + new Vector3(0.8f, 2.5f, 0f), new Vector3(1.5f, 0.9f, 0.05f), flag, false);
+    }
+
+    // Cone mesh (base radius 0.5 at y=0, tip at y=1) saved as an asset so the scene keeps it.
+    private static Mesh GetConeMesh()
+    {
+        string path = $"{MaterialFolder}/RoofCone.asset";
+        var mesh = AssetDatabase.LoadAssetAtPath<Mesh>(path);
+        if (mesh != null) return mesh;
+
+        const int segments = 16;
+        var vertices = new List<Vector3>();
+        var triangles = new List<int>();
+        Vector3 tip = new Vector3(0f, 1f, 0f);
+        for (int i = 0; i < segments; i++)
+        {
+            float a0 = i * Mathf.PI * 2f / segments, a1 = (i + 1) * Mathf.PI * 2f / segments;
+            Vector3 p0 = new Vector3(Mathf.Cos(a0) * 0.5f, 0f, Mathf.Sin(a0) * 0.5f);
+            Vector3 p1 = new Vector3(Mathf.Cos(a1) * 0.5f, 0f, Mathf.Sin(a1) * 0.5f);
+            int v = vertices.Count;
+            vertices.Add(p0); vertices.Add(tip); vertices.Add(p1);       // side (clockwise from outside)
+            triangles.Add(v); triangles.Add(v + 1); triangles.Add(v + 2);
+            v = vertices.Count;
+            vertices.Add(p0); vertices.Add(p1); vertices.Add(Vector3.zero); // bottom
+            triangles.Add(v); triangles.Add(v + 1); triangles.Add(v + 2);
+        }
+        mesh = new Mesh { name = "RoofCone" };
+        mesh.SetVertices(vertices);
+        mesh.SetTriangles(triangles, 0);
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        EnsureFolder(MaterialFolder);
+        AssetDatabase.CreateAsset(mesh, path);
+        return mesh;
+    }
+
+    private static void Part(GameObject parent, string name, Vector3 localPosition, Vector3 size, Material material,
+        bool collider = true, PrimitiveType type = PrimitiveType.Cube)
+    {
+        GameObject part = GameObject.CreatePrimitive(type);
         Undo.RegisterCreatedObjectUndo(part, "Build Climb Course");
         part.name = name;
+        if (!collider) Object.DestroyImmediate(part.GetComponent<Collider>());
         part.transform.SetParent(parent.transform, false);
         part.transform.localPosition = localPosition;
         part.transform.localScale = size;
@@ -367,24 +643,48 @@ public static class ClimbCourseBuilder
         var course = AssetDatabase.LoadAssetAtPath<ClimbCourse>(CourseAssetPath);
         if (course != null) return course;
 
+        // Long course with the Kenney platform kit (about 34 jumps, 5 checkpoints, moving platforms).
         course = ScriptableObject.CreateInstance<ClimbCourse>();
-        // prefab, width, gap, rise, turn, checkpoint
-        Add(course, Platform, 3.0f, 1.0f, 0.4f, 0f);
-        Add(course, Platform, 2.6f, 1.2f, 0.5f, 0f);
-        Add(course, Tall, 3.0f, 1.2f, 0.7f, 0f);
-        Add(course, Narrow, 2.0f, 1.0f, 0.5f, 60f);
-        Add(course, Narrow, 1.8f, 1.4f, 0.3f, 30f);
-        Add(course, Overhang, 2.6f, 1.2f, 0.8f, 0f, true);
-        Add(course, Narrow, 1.6f, 1.9f, 0.0f, -90f);
-        Add(course, Narrow, 1.6f, 2.0f, 0.3f, 0f);
-        Add(course, Slab, 2.2f, 1.5f, 0.5f, 0f);
-        Add(course, Platform, 2.4f, 1.0f, 0.9f, -60f);
-        Add(course, Platform, 2.4f, 1.0f, 0.9f, 0f);
-        Add(course, Narrow, 1.7f, 1.6f, 0.3f, 0f, true);
-        Add(course, Overhang, 2.2f, 1.3f, 0.8f, 45f);
-        Add(course, Narrow, 1.6f, 2.0f, 0.2f, 45f);
-        Add(course, Platform, 2.4f, 1.4f, 0.6f, 0f);
-        Add(course, Tall, 4.0f, 1.2f, 0.7f, -30f);   // last: goal + gate
+        // prefab, width, gap, rise, turn, checkpoint, decor[, move distance, move period]
+        // ── 초원 ──
+        Add(course, "block-grass-large", 3.2f, 1.2f, 0.5f, 0f, false, ClimbCourse.Decor.Trees);
+        Add(course, "block-grass", 2.4f, 1.4f, 0.6f, 0f, false, ClimbCourse.Decor.Flowers);
+        Add(course, "block-grass-long", 2.2f, 1.3f, 0.6f, 40f, false, ClimbCourse.Decor.None);
+        Add(course, "block-grass-hexagon", 2.4f, 1.5f, 0.5f, 20f, false, ClimbCourse.Decor.Flowers);
+        Add(course, "block-grass-low-large", 3.0f, 1.6f, 0.3f, 0f, false, ClimbCourse.Decor.Trees);
+        Add(course, "block-grass-narrow", 1.6f, 1.6f, 0.5f, -30f, false, ClimbCourse.Decor.None);
+        Add(course, "block-grass-large", 3.0f, 1.2f, 0.8f, -30f, true, ClimbCourse.Decor.Fence);
+        // ── 폐허 발판 ──
+        Add(course, "platform", 2.4f, 1.8f, 0.2f, 0f, false, ClimbCourse.Decor.None);
+        Add(course, "platform-fortified", 2.4f, 1.8f, 0.3f, 30f, false, ClimbCourse.Decor.None);
+        Add(course, "platform", 2.0f, 2.0f, 0.0f, 30f, false, ClimbCourse.Decor.None);
+        Add(course, "block-grass-overhang-large", 3.0f, 1.4f, 0.9f, 0f, false, ClimbCourse.Decor.Rocks);
+        Add(course, "block-grass-overhang-hexagon", 2.2f, 1.6f, 0.6f, 45f, false, ClimbCourse.Decor.Flowers);
+        Add(course, "block-grass-large-tall", 3.0f, 1.3f, 0.8f, 45f, true, ClimbCourse.Decor.Trees);
+        // ── 움직이는 발판 ──
+        Add(course, "block-moving-large", 2.4f, 1.8f, 0.3f, 0f, false, ClimbCourse.Decor.None, 1.5f, 3.5f);
+        Add(course, "block-moving-blue", 2.4f, 1.8f, 0.3f, -20f, false, ClimbCourse.Decor.None, 1.8f, 3.5f);
+        Add(course, "block-moving-large", 2.4f, 1.8f, 0.3f, -20f, false, ClimbCourse.Decor.None, 1.2f, 3.0f);
+        Add(course, "block-grass-large", 3.0f, 1.4f, 0.6f, -20f, true, ClimbCourse.Decor.Trees);
+        // ── 설산 ──
+        Add(course, "block-snow", 2.4f, 1.2f, 0.8f, -40f, false, ClimbCourse.Decor.Trees);
+        Add(course, "block-snow-narrow", 1.6f, 1.6f, 0.4f, -30f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-hexagon", 2.2f, 1.6f, 0.5f, 0f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-overhang-narrow", 1.5f, 1.7f, 0.3f, 30f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-large-tall", 3.0f, 1.2f, 0.9f, 30f, false, ClimbCourse.Decor.Trees);
+        Add(course, "block-snow-narrow", 1.5f, 1.9f, 0.0f, 60f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-overhang-large", 3.0f, 1.4f, 0.7f, 0f, true, ClimbCourse.Decor.Rocks);
+        // ── 정상 직전 ──
+        Add(course, "block-moving-blue", 2.2f, 1.8f, 0.4f, -30f, false, ClimbCourse.Decor.None, 1.5f, 3.5f);
+        Add(course, "block-snow-hexagon", 2.0f, 1.7f, 0.6f, -30f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-narrow", 1.4f, 1.9f, 0.2f, -30f, false, ClimbCourse.Decor.None);
+        Add(course, "platform-fortified", 2.4f, 1.8f, 0.3f, 0f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-overhang-long", 2.0f, 1.4f, 0.8f, 40f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-large", 3.0f, 1.3f, 0.7f, 20f, true, ClimbCourse.Decor.Trees);
+        Add(course, "block-snow-narrow", 1.4f, 2.0f, 0.2f, 0f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-hexagon", 2.0f, 1.7f, 0.6f, -25f, false, ClimbCourse.Decor.None);
+        Add(course, "platform-fortified", 2.6f, 1.6f, 0.5f, -25f, false, ClimbCourse.Decor.None);
+        Add(course, "block-snow-large", 6.0f, 1.3f, 0.6f, 0f, false, ClimbCourse.Decor.None);   // last: castle wall + goal
 
         EnsureFolder("Assets/Data");
         AssetDatabase.CreateAsset(course, CourseAssetPath);
@@ -393,13 +693,15 @@ public static class ClimbCourseBuilder
         return course;
     }
 
-    private static void Add(ClimbCourse course, string guid, float width, float gap, float rise, float turn,
-        bool checkpoint = false)
+    private static void Add(ClimbCourse course, string prefabName, float width, float gap, float rise, float turn,
+        bool checkpoint, ClimbCourse.Decor decor, float moveDistance = 0f, float movePeriod = 4f)
     {
-        GameObject prefab = LoadPrefab(guid);
-        if (prefab == null) Debug.LogWarning($"[ClimbCourse] platform prefab {guid} not found.");
+        GameObject prefab = FindPrefab(prefabName);
         course.steps.Add(new ClimbCourse.Step
-            { prefab = prefab, width = width, gap = gap, rise = rise, turn = turn, checkpoint = checkpoint });
+        {
+            prefab = prefab, width = width, gap = gap, rise = rise, turn = turn, checkpoint = checkpoint,
+            decor = decor, moveDistance = moveDistance, movePeriod = movePeriod
+        });
     }
 
     private static Material GetMaterial(string name, Color color)

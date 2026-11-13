@@ -1,0 +1,340 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fc7af48d422e408895d7b1ee4f6b2cee, type: 3}
+  m_Name: ClimbCourse_Long
+  m_EditorClassIdentifier: Assembly-CSharp::ClimbCourse
+  startPadPrefab: {fileID: 0}
+  startPadWidth: 7
+  steps:
+  - prefab: {fileID: 3172459210470259991, guid: a3fc37e242f8c4842866ac4dfb39386d, type: 3}
+    width: 3.2
+    gap: 1.2
+    rise: 0.5
+    turn: 0
+    checkpoint: 0
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 4136275235177094592, guid: 71a415bd5cbe41e40a374b9f2e2da7b7, type: 3}
+    width: 2.4
+    gap: 1.4
+    rise: 0.6
+    turn: 0
+    checkpoint: 0
+    decor: 2
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 5580089622902130242, guid: 12e9861950428324684361ffb0299136, type: 3}
+    width: 2.2
+    gap: 1.3
+    rise: 0.6
+    turn: 40
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2765238992446246931, guid: d1b7e9e145f5f6a49bfbb166fdc25a86, type: 3}
+    width: 2.4
+    gap: 1.5
+    rise: 0.5
+    turn: 20
+    checkpoint: 0
+    decor: 2
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 6897166608576946117, guid: 2c23e613ee3a67c40bfb7e38feae89e1, type: 3}
+    width: 3
+    gap: 1.6
+    rise: 0.3
+    turn: 0
+    checkpoint: 0
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 3403530034517984982, guid: f1013ad665d31f04cafcb0cf91715620, type: 3}
+    width: 1.6
+    gap: 1.6
+    rise: 0.5
+    turn: -30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 3172459210470259991, guid: a3fc37e242f8c4842866ac4dfb39386d, type: 3}
+    width: 3
+    gap: 1.2
+    rise: 0.8
+    turn: -30
+    checkpoint: 1
+    decor: 4
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 6686678190471232031, guid: d4247b55d367a854aa87f6f2f54e863b, type: 3}
+    width: 2.4
+    gap: 1.8
+    rise: 0.2
+    turn: 0
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2769358629128639716, guid: a1ce540e3bbed5647b4a89b850b05a27, type: 3}
+    width: 2.4
+    gap: 1.8
+    rise: 0.3
+    turn: 30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 6686678190471232031, guid: d4247b55d367a854aa87f6f2f54e863b, type: 3}
+    width: 2
+    gap: 2
+    rise: 0
+    turn: 30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 8770453431533931015, guid: 36e95a3a22aaedd4e9704ce8bde94a56, type: 3}
+    width: 3
+    gap: 1.4
+    rise: 0.9
+    turn: 0
+    checkpoint: 0
+    decor: 3
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 4240059142998275583, guid: babc97b78ee966e4e98e9b9a4ddeb7ca, type: 3}
+    width: 2.2
+    gap: 1.6
+    rise: 0.6
+    turn: 45
+    checkpoint: 0
+    decor: 2
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 6268244019223861705, guid: b284fdabeb1eb2d49afee7a5702e9374, type: 3}
+    width: 3
+    gap: 1.3
+    rise: 0.8
+    turn: 45
+    checkpoint: 1
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 6078778464705396158, guid: a615813054aae3442af847d7889ce183, type: 3}
+    width: 2.4
+    gap: 1.8
+    rise: 0.3
+    turn: 0
+    checkpoint: 0
+    decor: 0
+    moveDistance: 1.5
+    movePeriod: 3.5
+  - prefab: {fileID: 8308295948652347905, guid: 6073ae66538c3454983977f0387f8b2b, type: 3}
+    width: 2.4
+    gap: 1.8
+    rise: 0.3
+    turn: -20
+    checkpoint: 0
+    decor: 0
+    moveDistance: 1.8
+    movePeriod: 3.5
+  - prefab: {fileID: 6078778464705396158, guid: a615813054aae3442af847d7889ce183, type: 3}
+    width: 2.4
+    gap: 1.8
+    rise: 0.3
+    turn: -20
+    checkpoint: 0
+    decor: 0
+    moveDistance: 1.2
+    movePeriod: 3
+  - prefab: {fileID: 3172459210470259991, guid: a3fc37e242f8c4842866ac4dfb39386d, type: 3}
+    width: 3
+    gap: 1.4
+    rise: 0.6
+    turn: -20
+    checkpoint: 1
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 7905655967154718927, guid: 9bf143e86239aa34aa3da47770917c22, type: 3}
+    width: 2.4
+    gap: 1.2
+    rise: 0.8
+    turn: -40
+    checkpoint: 0
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2153105301113733920, guid: e40b998bce0bc6f42b5e827e1daf9349, type: 3}
+    width: 1.6
+    gap: 1.6
+    rise: 0.4
+    turn: -30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 8314068176639279917, guid: 07c34774b66a7a240b81d1c78ac3e9f1, type: 3}
+    width: 2.2
+    gap: 1.6
+    rise: 0.5
+    turn: 0
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 9156694865904531000, guid: 18032274160657840aa545dbd6b14746, type: 3}
+    width: 1.5
+    gap: 1.7
+    rise: 0.3
+    turn: 30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 5594791097094032510, guid: 6ed18c4fb02b668438f5d032529d42d8, type: 3}
+    width: 3
+    gap: 1.2
+    rise: 0.9
+    turn: 30
+    checkpoint: 0
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2153105301113733920, guid: e40b998bce0bc6f42b5e827e1daf9349, type: 3}
+    width: 1.5
+    gap: 1.9
+    rise: 0
+    turn: 60
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 1885665825229244675, guid: af30b95d2e3286f4ba4fb0c2bfcd6652, type: 3}
+    width: 3
+    gap: 1.4
+    rise: 0.7
+    turn: 0
+    checkpoint: 1
+    decor: 3
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 8308295948652347905, guid: 6073ae66538c3454983977f0387f8b2b, type: 3}
+    width: 2.2
+    gap: 1.8
+    rise: 0.4
+    turn: -30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 1.5
+    movePeriod: 3.5
+  - prefab: {fileID: 8314068176639279917, guid: 07c34774b66a7a240b81d1c78ac3e9f1, type: 3}
+    width: 2
+    gap: 1.7
+    rise: 0.6
+    turn: -30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2153105301113733920, guid: e40b998bce0bc6f42b5e827e1daf9349, type: 3}
+    width: 1.4
+    gap: 1.9
+    rise: 0.2
+    turn: -30
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2769358629128639716, guid: a1ce540e3bbed5647b4a89b850b05a27, type: 3}
+    width: 2.4
+    gap: 1.8
+    rise: 0.3
+    turn: 0
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 7068783791769025137, guid: 9ac7b8a821ba4ea448fda62535fc0e1e, type: 3}
+    width: 2
+    gap: 1.4
+    rise: 0.8
+    turn: 40
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 8494326549152185201, guid: f421505fd01e8a8448c564137956e05b, type: 3}
+    width: 3
+    gap: 1.3
+    rise: 0.7
+    turn: 20
+    checkpoint: 1
+    decor: 1
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2153105301113733920, guid: e40b998bce0bc6f42b5e827e1daf9349, type: 3}
+    width: 1.4
+    gap: 2
+    rise: 0.2
+    turn: 0
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 8314068176639279917, guid: 07c34774b66a7a240b81d1c78ac3e9f1, type: 3}
+    width: 2
+    gap: 1.7
+    rise: 0.6
+    turn: -25
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 2769358629128639716, guid: a1ce540e3bbed5647b4a89b850b05a27, type: 3}
+    width: 2.6
+    gap: 1.6
+    rise: 0.5
+    turn: -25
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  - prefab: {fileID: 8494326549152185201, guid: f421505fd01e8a8448c564137956e05b, type: 3}
+    width: 6
+    gap: 1.3
+    rise: 0.6
+    turn: 0
+    checkpoint: 0
+    decor: 0
+    moveDistance: 0
+    movePeriod: 4
+  decorSeed: 11
+  minimumMargin: 0.3
+  gateHeight: 4
+  gateWidth: 3
+  stoneColor: {r: 0.62, g: 0.6, b: 0.56, a: 1}
+  doorColor: {r: 0.42, g: 0.26, b: 0.14, a: 1}
+  wallHeight: 7
+  wallHalfLength: 14
+  wallDepth: 14
+  buildCastle: 1
+  castleDistance: 30
+  castleScale: 1
+  roofColor: {r: 0.55, g: 0.18, b: 0.16, a: 1}
+  flagColor: {r: 0.95, g: 0.8, b: 0.2, a: 1}
+  buildCloudLayer: 1
+  cloudHeight: -3.5
+  cloudColor: {r: 0.9, g: 0.94, b: 1, a: 1}

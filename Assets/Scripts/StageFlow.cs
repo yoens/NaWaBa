@@ -13,6 +13,27 @@ public static class StageSceneLoader
     private static bool loading;
     public static bool IsLoading => loading;
 
+    // ---------- stage order (Resources/NaWaBaStages) ----------
+
+    // First stage of a new run. Falls back to the given scene when there is no stage list.
+    public static string FirstStage(string fallback)
+    {
+        NaWaBaStageList list = NaWaBaStageList.Instance;
+        if (list != null && list.stages.Count > 0 && !string.IsNullOrEmpty(list.stages[0].sceneName))
+            return list.stages[0].sceneName;
+        return fallback;
+    }
+
+    // Stage after the current scene, or "" when the current scene is the last one (run ends).
+    // Without a stage list (or when the scene is not in it) the fallback is used.
+    public static string NextStage(string currentScene, string fallback)
+    {
+        NaWaBaStageList list = NaWaBaStageList.Instance;
+        int index = list != null ? list.IndexOf(currentScene) : -1;
+        if (index < 0) return fallback;
+        return index + 1 < list.stages.Count ? list.stages[index + 1].sceneName : "";
+    }
+
     public static bool CanLoad(string sceneName) =>
         !string.IsNullOrWhiteSpace(sceneName) &&
         Application.CanStreamedLevelBeLoaded(sceneName);

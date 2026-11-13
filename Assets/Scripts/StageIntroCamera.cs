@@ -10,7 +10,7 @@ using UnityEngine.InputSystem;
 public class StageIntroCamera : MonoBehaviour
 {
     [SerializeField, Min(1f)] private float metresPerSecond = 13f;
-    [SerializeField] private Vector2 durationRange = new Vector2(3.5f, 8f);
+    [SerializeField] private Vector2 durationRange = new Vector2(3.5f, 10f);
     [SerializeField] private float height = 4f;        // above the route
     [SerializeField] private float backDistance = 8f;  // behind, looking toward the goal
     [SerializeField, Range(0.05f, 0.5f)] private float blendToFollow = 0.2f;

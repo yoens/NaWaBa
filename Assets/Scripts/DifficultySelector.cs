@@ -20,7 +20,7 @@ public class DifficultySelector : MonoBehaviour
         if (label == null) label = GetComponentInChildren<TMP_Text>();
         if (presets == null || presets.Length == 0)
             presets = Resources.LoadAll<NaWaBaDifficulty>(NaWaBaDifficulty.ResourceFolder)
-                .OrderBy(d => d.SnowballSpeed).ThenBy(d => d.SurviveDuration).ToArray();
+                .OrderBy(d => d.Order).ThenBy(d => d.SnowballSpeed).ToArray();
         if (presets.Length == 0)
         {
             Debug.LogError("DifficultySelector: no NaWaBaDifficulty assets in Resources/Difficulty.", this);

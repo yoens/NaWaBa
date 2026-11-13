@@ -381,6 +381,8 @@
             }
             if (message.type === "controller_hello") {
                 controllerId = message.controllerId;
+                // STUN/TURN list from the server (the Unity host uses the same list).
+                if (Array.isArray(message.iceServers) && message.iceServers.length) videoReceiver.iceServers = message.iceServers;
                 // Short, per-connection tag so several viewers in one room can tell themselves apart.
                 myTag = String(controllerId).replace(/-/g, "").slice(0, 4).toUpperCase();
                 renderRoom();

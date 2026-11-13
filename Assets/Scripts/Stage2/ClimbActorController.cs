@@ -58,6 +58,18 @@ public class ClimbActorController : MonoBehaviour
     }
 
     private bool defaultUseGravity = true;
+    private Vector3 carryVelocity;
+
+    private Vector3 GroundMoverVelocity()
+    {
+        foreach (Collider c in groundContacts.Keys)
+        {
+            if (c == null) continue;
+            ClimbMover mover = c.GetComponentInParent<ClimbMover>();
+            if (mover != null) return mover.Velocity;
+        }
+        return Vector3.zero;
+    }
 
     // 원격 조작 준비(영상 연결·카운트다운) 중에는 스테이지가 입력을 잠급니다.
     public bool InputLocked { get; set; }
@@ -211,6 +223,11 @@ public class ClimbActorController : MonoBehaviour
         Vector3 groundNormal = GroundNormal;
         bool onSlope = grounded && groundNormal.y < 0.999f;
 
+        // Ride moving platforms; the platform's speed is kept through a jump off it.
+        if (grounded) carryVelocity = GroundMoverVelocity();
+        velocity.x += carryVelocity.x;
+        velocity.z += carryVelocity.z;
+
         float gravityScale = Mathf.Max(1f, gravityMultiplier);
 
         if (CanControl && wantsJump && grounded)
@@ -316,6 +333,7 @@ public class ClimbActorController : MonoBehaviour
             body.angularVelocity = Vector3.zero;
         }
         frozenVelocity = Vector3.zero;
+        carryVelocity = Vector3.zero;
         body.position = respawnPosition;
         body.rotation = respawnRotation;
 

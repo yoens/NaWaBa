@@ -5,8 +5,10 @@ public class SnowSlopeTrigger : MonoBehaviour
 {
     public enum Kind { Snowball, Summit }
 
-    private SnowSlope slope;
-    private Kind kind;
+    [SerializeField] private SnowSlope slope;
+    [SerializeField] private Kind kind;
+
+    public Kind TriggerKind => kind;
 
     public void Init(SnowSlope owner, Kind triggerKind)
     {

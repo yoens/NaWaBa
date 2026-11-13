@@ -5,6 +5,7 @@
         constructor({ video, stats, playButton, onAnswer, onReady, onFailure, onStatus }) {
             Object.assign(this, { video, stats, playButton, onAnswer, onReady, onFailure, onStatus });
             this.session = null;
+            this.iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
             playButton.addEventListener("click", () => this.tryPlay());
         }
         current(s) { return this.session === s && !s.closed; }
@@ -20,10 +21,16 @@
                 cancelGather: null, statsTimer: null, readingStats: false, previousStats: null };
             this.session = s;
             try {
-                s.peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+                s.peer = new RTCPeerConnection({ iceServers: this.iceServers });
                 s.peer.onconnectionstatechange = () => {
                     if (!this.current(s)) return;
-                    if (["failed", "disconnected", "closed"].includes(s.peer.connectionState))
+                    const state = s.peer.connectionState;
+                    if (state === "failed" && !s.route && !this.hasRelay()) {
+                        // Never connected and no TURN relay configured: likely a strict NAT/firewall.
+                        console.warn("[NaWaBa video] ICE failed without TURN relay", this.iceServers.map(x => x.urls));
+                        this.onFailure("영상 연결 실패: 이 네트워크에서는 직접 연결이 막혀 있을 수 있습니다 " +
+                            "(TURN 릴레이 서버 필요). 다른 네트워크에서 다시 시도하거나 호스트에게 알려주세요.");
+                    } else if (["failed", "disconnected", "closed"].includes(state))
                         this.onFailure("영상 연결이 끊겨 조작을 중지했습니다. 다시 신청하세요.");
                 };
                 s.peer.ontrack = event => {
@@ -120,6 +127,7 @@
             try {
                 const reports = await s.peer.getStats();
                 if (!this.current(s)) return;
+                s.route = this.readRoute(reports) || s.route;
                 for (const report of reports.values()) {
                     if (report.type !== "inbound-rtp" || (report.kind || report.mediaType) !== "video") continue;
                     const previous = s.previousStats;
@@ -129,12 +137,31 @@
                     const mbps = seconds > 0 ? (report.bytesReceived - previous.bytesReceived) * 8 / seconds / 1e6 : 0;
                     const codec = reports.get(report.codecId)?.mimeType || "video";
                     this.stats.textContent = `${report.frameWidth || this.video.videoWidth} × ${report.frameHeight || this.video.videoHeight}` +
-                        ` | ${Number(fps || 0).toFixed(1)} fps | ${mbps.toFixed(2)} Mbps | ${codec}`;
+                        ` | ${Number(fps || 0).toFixed(1)} fps | ${mbps.toFixed(2)} Mbps | ${codec}` +
+                        (s.route ? ` | ${s.route}` : "");
                     s.previousStats = { timestamp: report.timestamp, framesDecoded: report.framesDecoded,
                         bytesReceived: report.bytesReceived };
                 }
             } catch { /* Stats are diagnostic; frame freshness governs safety. */ }
             finally { s.readingStats = false; }
+        }
+        hasRelay() {
+            return this.iceServers.some(server => [].concat(server.urls).some(url => /^turns?:/.test(url)));
+        }
+        // How the video reaches this browser: direct (host), through NAT (srflx) or TURN relay.
+        readRoute(reports) {
+            let pair = null;
+            for (const report of reports.values()) {
+                if (report.type === "transport" && report.selectedCandidatePairId)
+                    pair = reports.get(report.selectedCandidatePairId);
+            }
+            if (!pair) for (const report of reports.values())
+                if (report.type === "candidate-pair" && report.state === "succeeded" && report.nominated) pair = report;
+            if (!pair) return "";
+            const local = reports.get(pair.localCandidateId), remote = reports.get(pair.remoteCandidateId);
+            const name = type => ({ host: "직접", srflx: "NAT 통과", prflx: "NAT 통과", relay: "TURN 릴레이" })[type] || type || "?";
+            const rtt = pair.currentRoundTripTime ? ` ${Math.round(pair.currentRoundTripTime * 1000)}ms` : "";
+            return `연결: ${name(local?.candidateType)}↔${name(remote?.candidateType)}${rtt}`;
         }
         stop() {
             const s = this.session;

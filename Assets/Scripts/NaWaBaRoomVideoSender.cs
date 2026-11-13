@@ -121,9 +121,8 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
         for (int i = 0; i < 3; i++) yield return null;
 
         Debug.Log("[NaWaBa Room Video] 2 PEER", this);
-        var configuration = new RTCConfiguration {
-            iceServers = new[] { new RTCIceServer { urls = new[] { "stun:stun.l.google.com:19302" } } }
-        };
+        var configuration = new RTCConfiguration { iceServers = BuildIceServers() };
+        LogHostVideoInfo();
         peer = new RTCPeerConnection(ref configuration);
         var currentPeer = peer;
         string currentGrant = grant;
@@ -175,6 +174,51 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
             throw new InvalidOperationException("Video settings failed: " + result.errorType);
         gateway.SetLocalVideoConnected(grant, peer.ConnectionState == RTCPeerConnectionState.Connected);
         Debug.Log("[NaWaBa Room Video] 4 ANSWER APPLIED - 720p / max 30fps", this);
+    }
+
+    // Same STUN/TURN list as the browsers (from the server); Google STUN when none was sent.
+    private RTCIceServer[] BuildIceServers()
+    {
+        var list = new System.Collections.Generic.List<RTCIceServer>();
+        RemoteInputGateway.IceServer[] fromServer = gateway != null ? gateway.IceServers : null;
+        if (fromServer != null)
+        {
+            foreach (RemoteInputGateway.IceServer server in fromServer)
+            {
+                if (server == null || server.urls == null || server.urls.Length == 0) continue;
+                var ice = new RTCIceServer { urls = server.urls };
+                if (!string.IsNullOrEmpty(server.username))
+                {
+                    ice.username = server.username;
+                    ice.credential = server.credential;
+                    ice.credentialType = RTCIceCredentialType.Password;
+                }
+                list.Add(ice);
+            }
+        }
+        if (list.Count == 0) list.Add(new RTCIceServer { urls = new[] { "stun:stun.l.google.com:19302" } });
+        return list.ToArray();
+    }
+
+    private static bool loggedVideoInfo;
+
+    // Step 7 check on another PC: what this machine uses to capture and encode the video.
+    private void LogHostVideoInfo()
+    {
+        if (loggedVideoInfo) return;
+        loggedVideoInfo = true;
+        bool relay = false;
+        if (gateway != null && gateway.IceServers != null)
+            foreach (RemoteInputGateway.IceServer server in gateway.IceServers)
+                if (server?.urls != null)
+                    foreach (string url in server.urls)
+                        if (url != null && url.StartsWith("turn")) relay = true;
+        Debug.Log("[NaWaBa Room Video] HOST INFO\n" +
+            $"GPU: {SystemInfo.graphicsDeviceName} ({SystemInfo.graphicsDeviceVendor}, {SystemInfo.graphicsMemorySize} MB)\n" +
+            $"Graphics API: {SystemInfo.graphicsDeviceType} {SystemInfo.graphicsDeviceVersion}\n" +
+            $"Video texture: {(videoTexture != null ? videoTexture.format.ToString() : "?")} {Width}x{Height}\n" +
+            $"OS: {SystemInfo.operatingSystem} | CPU: {SystemInfo.processorType}\n" +
+            $"ICE: {(relay ? "STUN + TURN relay" : "STUN only")}", this);
     }
 
     private IEnumerator CaptureFrames()

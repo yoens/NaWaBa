@@ -14,10 +14,14 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::NaWaBaDifficulty
   displayName: HARD
   webLabel: "\uC5B4\uB824\uC6C0"
-  surviveDuration: 25
-  spawnInterval: 0.7
-  spawnHalfWidth: 6.5
+  order: 2
+  spawnInterval: 0.75
+  spawnHalfWidth: 8.5
   snowballSpeed: 8.5
-  climbScrollSpeed: 4
+  doubleChance: 0.35
+  rowChance: 0.2
+  aimedChance: 0.35
   summitMeters: 400
-  useCheckpoints: 0
+  respawn: 1
+  courseName: ClimbCourse_Long
+  moverSpeed: 1.3

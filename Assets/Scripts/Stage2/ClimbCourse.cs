@@ -8,6 +8,8 @@ using UnityEngine;
 [CreateAssetMenu(fileName = "ClimbCourse", menuName = "NaWaBa/Climb Course")]
 public class ClimbCourse : ScriptableObject
 {
+    public enum Decor { None, Trees, Flowers, Rocks, Fence }
+
     [Serializable]
     public class Step
     {
@@ -23,6 +25,12 @@ public class ClimbCourse : ScriptableObject
         public float turn;
         [Tooltip("Falls after landing here return to this platform (if the difficulty allows).")]
         public bool checkpoint;
+        [Tooltip("Props on top of the platform (visual only). Snow platforms get snowy trees.")]
+        public Decor decor;
+        [Tooltip("Moving platform: swings this many metres to each side (0 = still).")]
+        [Min(0f)] public float moveDistance;
+        [Tooltip("Seconds for one full swing of a moving platform.")]
+        [Min(0.5f)] public float movePeriod = 4f;
     }
 
     [Header("Start")]
@@ -34,6 +42,9 @@ public class ClimbCourse : ScriptableObject
     [Tooltip("Steps from the start pad to the gate. The last one holds the goal and the gate.")]
     public List<Step> steps = new List<Step>();
 
+    [Tooltip("Same number = same prop placement every build.")]
+    public int decorSeed = 11;
+
     [Header("Safety check")]
     [Tooltip("Warn when a jump leaves less than this many metres to spare.")]
     [Min(0f)] public float minimumMargin = 0.3f;
@@ -43,6 +54,22 @@ public class ClimbCourse : ScriptableObject
     public float gateWidth = 3f;
     public Color stoneColor = new Color(0.62f, 0.6f, 0.56f);
     public Color doorColor = new Color(0.42f, 0.26f, 0.14f);
+
+    [Header("Castle wall (around the gate)")]
+    [Tooltip("Height of the wall above the last platform (the gate opening sits inside it).")]
+    public float wallHeight = 7f;
+    [Tooltip("How far the wall reaches to each side of the gate (m).")]
+    public float wallHalfLength = 14f;
+    [Tooltip("How far the wall and towers reach down below the last platform (into the clouds).")]
+    public float wallDepth = 14f;
+
+    [Header("Castle in the background")]
+    public bool buildCastle = true;
+    [Tooltip("Distance behind the gate (m).")]
+    public float castleDistance = 30f;
+    [Min(0.3f)] public float castleScale = 1f;
+    public Color roofColor = new Color(0.55f, 0.18f, 0.16f);
+    public Color flagColor = new Color(0.95f, 0.8f, 0.2f);
 
     [Header("Below the course")]
     [Tooltip("A cloud layer under the course (visual only, no collider).")]

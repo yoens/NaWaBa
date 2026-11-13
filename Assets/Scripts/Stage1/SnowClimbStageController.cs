@@ -2,12 +2,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-// Stage 1 (3D): climb the snowy slope to the summit while dodging rolling snowballs.
-// Same controls and character as stage 2 (move, jump, Q/E + R/F camera on the web).
-// - The stage opens with a camera shot from the summit back to the start.
-// - A snowball hit restarts the climb from the bottom (same controller) after retryDelay.
-// - Control can change hands at any time; everything freezes during the handoff.
-// - Reaching the summit moves to stage 2 and a remote controller keeps their turn.
+
 [DefaultExecutionOrder(-100)]
 public class SnowClimbStageController : MonoBehaviour, IStageFlow
 {
@@ -45,6 +40,7 @@ public class SnowClimbStageController : MonoBehaviour, IStageFlow
     private string stageName = BaseStageName;
     private float summitMeters = 300f;
     private float retryLeft, advanceLeft;
+    private string nextScene = "";
     private bool initialized, usesPersistentGateway;
     private string statusLabel = "";
     private GUIStyle labelStyle;
@@ -88,6 +84,7 @@ public class SnowClimbStageController : MonoBehaviour, IStageFlow
 
         if (retryButton != null) retryLabel = retryButton.GetComponentInChildren<TMP_Text>();
         handoff = new StageHandoff(usesPersistentGateway ? gateway : null, hostResumeDelay);
+        slope.Target = actor.transform;
         ApplyDifficulty();
 
         // Stage 1 is always the start of a new run (한 판).
@@ -100,11 +97,13 @@ public class SnowClimbStageController : MonoBehaviour, IStageFlow
         NaWaBaDifficulty difficulty = GameSession.Difficulty;
         if (difficulty == null) return;
         slope.Configure(difficulty.SpawnInterval, difficulty.SpawnHalfWidth, difficulty.SnowballSpeed);
+        slope.ConfigurePatterns(difficulty.DoubleChance, difficulty.RowChance, difficulty.AimedChance);
         summitMeters = difficulty.SummitMeters;
         if (!string.IsNullOrEmpty(difficulty.WebLabel))
             stageName = $"{BaseStageName} ({difficulty.WebLabel})";
         Debug.Log($"[Snow] difficulty {difficulty.DisplayName}: every {difficulty.SpawnInterval:0.##}s, " +
-            $"speed {difficulty.SnowballSpeed:0.#}", this);
+            $"speed {difficulty.SnowballSpeed:0.#}, double {difficulty.DoubleChance:0.##}, " +
+            $"row {difficulty.RowChance:0.##}, aimed {difficulty.AimedChance:0.##}", this);
     }
 
     private void OnEnable()
@@ -275,7 +274,9 @@ public class SnowClimbStageController : MonoBehaviour, IStageFlow
         if (Multiplayer)
             gateway.ReportRunEvent("stage_cleared", $"{player.Name}님이 {stageName} 클리어! 다음 스테이지로 이동합니다");
 
-        if (StageSceneLoader.CanLoad(nextStageSceneName))
+        // Next stage from the stage list (Resources/NaWaBaStages); the Inspector name is the fallback.
+        nextScene = StageSceneLoader.NextStage(gameObject.scene.name, nextStageSceneName);
+        if (StageSceneLoader.CanLoad(nextScene))
         {
             state = StageState.Advancing;
             advanceLeft = nextStageDelay;
@@ -292,7 +293,7 @@ public class SnowClimbStageController : MonoBehaviour, IStageFlow
             return;
         }
         SetStatus("LOADING...");
-        if (!StageSceneLoader.Load(nextStageSceneName, this, this, carryControl: true))
+        if (!StageSceneLoader.Load(nextScene, this, this, carryControl: true))
             state = StageState.Cleared;
     }
 
