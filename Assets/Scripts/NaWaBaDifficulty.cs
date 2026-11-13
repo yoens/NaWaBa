@@ -10,14 +10,15 @@ public class NaWaBaDifficulty : ScriptableObject
     [SerializeField] private string displayName = "NORMAL";   // Unity UI (ASCII-safe)
     [SerializeField] private string webLabel = "보통";          // web page
 
-    [Header("Stage 1 · 눈덩이 피하기")]
+    [Header("Stage 1 · 눈덩이 피하며 오르기")]
+    // Old top-down stage only (Stage_Dodge_TopDown): seconds to survive.
     [SerializeField, Min(1f)] private float surviveDuration = 20f;
     [SerializeField, Min(0.1f)] private float spawnInterval = 1f;
     [SerializeField, Min(0f)] private float spawnHalfWidth = 9f;
     [SerializeField, Min(0.1f)] private float snowballSpeed = 7f;
-    // How fast the scenery slides down (the "climbing up" feel). Visual only.
+    // Old top-down stage only: how fast the scenery slides down. Visual only.
     [SerializeField, Min(0f)] private float climbScrollSpeed = 3f;
-    // Height shown at the end of stage 1 (start of the mountain).
+    // Altitude shown at the summit of stage 1 (ALT ...m on screen).
     [SerializeField, Min(10f)] private float summitMeters = 300f;
 
     [Header("Stage 2 · 성문 앞으로")]

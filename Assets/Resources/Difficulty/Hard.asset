@@ -16,7 +16,7 @@ MonoBehaviour:
   webLabel: "\uC5B4\uB824\uC6C0"
   surviveDuration: 25
   spawnInterval: 0.7
-  spawnHalfWidth: 9.5
+  spawnHalfWidth: 6.5
   snowballSpeed: 8.5
   climbScrollSpeed: 4
   summitMeters: 400

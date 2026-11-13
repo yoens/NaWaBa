@@ -1,0 +1,121 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fc7af48d422e408895d7b1ee4f6b2cee, type: 3}
+  m_Name: ClimbCourse_Default
+  m_EditorClassIdentifier: Assembly-CSharp::ClimbCourse
+  startPadPrefab: {fileID: 0}
+  startPadWidth: 7
+  steps:
+  - prefab: {fileID: 256775084897522771, guid: 2022cdbec974e564ea44178ef71ec000, type: 3}
+    width: 3
+    gap: 1
+    rise: 0.4
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 256775084897522771, guid: 2022cdbec974e564ea44178ef71ec000, type: 3}
+    width: 2.6
+    gap: 1.2
+    rise: 0.5
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 1640006545126030749, guid: 3cf4cd4961b25d243977f7da683cd20b, type: 3}
+    width: 3
+    gap: 1.2
+    rise: 0.7
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 468644832473555434, guid: ece2d03b4801ca64eaeddee661a231a1, type: 3}
+    width: 2
+    gap: 1
+    rise: 0.5
+    turn: 60
+    checkpoint: 0
+  - prefab: {fileID: 468644832473555434, guid: ece2d03b4801ca64eaeddee661a231a1, type: 3}
+    width: 1.8
+    gap: 1.4
+    rise: 0.3
+    turn: 30
+    checkpoint: 0
+  - prefab: {fileID: 4669228520399203517, guid: 662d32b381177b644ad809621139e2e6, type: 3}
+    width: 2.6
+    gap: 1.2
+    rise: 0.8
+    turn: 0
+    checkpoint: 1
+  - prefab: {fileID: 468644832473555434, guid: ece2d03b4801ca64eaeddee661a231a1, type: 3}
+    width: 1.6
+    gap: 1.9
+    rise: 0
+    turn: -90
+    checkpoint: 0
+  - prefab: {fileID: 468644832473555434, guid: ece2d03b4801ca64eaeddee661a231a1, type: 3}
+    width: 1.6
+    gap: 2
+    rise: 0.3
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 4584651834578022925, guid: 550882abb60f110408a6616e2b8c7cc8, type: 3}
+    width: 2.2
+    gap: 1.5
+    rise: 0.5
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 256775084897522771, guid: 2022cdbec974e564ea44178ef71ec000, type: 3}
+    width: 2.4
+    gap: 1
+    rise: 0.9
+    turn: -60
+    checkpoint: 0
+  - prefab: {fileID: 256775084897522771, guid: 2022cdbec974e564ea44178ef71ec000, type: 3}
+    width: 2.4
+    gap: 1
+    rise: 0.9
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 468644832473555434, guid: ece2d03b4801ca64eaeddee661a231a1, type: 3}
+    width: 1.7
+    gap: 1.6
+    rise: 0.3
+    turn: 0
+    checkpoint: 1
+  - prefab: {fileID: 4669228520399203517, guid: 662d32b381177b644ad809621139e2e6, type: 3}
+    width: 2.2
+    gap: 1.3
+    rise: 0.8
+    turn: 45
+    checkpoint: 0
+  - prefab: {fileID: 468644832473555434, guid: ece2d03b4801ca64eaeddee661a231a1, type: 3}
+    width: 1.6
+    gap: 2
+    rise: 0.2
+    turn: 45
+    checkpoint: 0
+  - prefab: {fileID: 256775084897522771, guid: 2022cdbec974e564ea44178ef71ec000, type: 3}
+    width: 2.4
+    gap: 1.4
+    rise: 0.6
+    turn: 0
+    checkpoint: 0
+  - prefab: {fileID: 1640006545126030749, guid: 3cf4cd4961b25d243977f7da683cd20b, type: 3}
+    width: 4
+    gap: 1.2
+    rise: 0.7
+    turn: -30
+    checkpoint: 0
+  minimumMargin: 0.3
+  gateHeight: 4
+  gateWidth: 3
+  stoneColor: {r: 0.62, g: 0.6, b: 0.56, a: 1}
+  doorColor: {r: 0.42, g: 0.26, b: 0.14, a: 1}
+  buildCloudLayer: 1
+  cloudHeight: -3.5
+  cloudColor: {r: 0.9, g: 0.94, b: 1, a: 1}

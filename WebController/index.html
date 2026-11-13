@@ -81,6 +81,8 @@
         <button data-key="KeyQ" data-control="look" disabled hidden aria-label="카메라 왼쪽 회전">⟲ Q</button>
         <button data-key="Space" data-control="jump" disabled hidden aria-label="점프">점프 Space</button>
         <button data-key="KeyE" data-control="look" disabled hidden aria-label="카메라 오른쪽 회전">E ⟳</button>
+        <button data-key="KeyR" data-control="look" disabled hidden aria-label="카메라 위로">R ⤒</button>
+        <button data-key="KeyF" data-control="look" disabled hidden aria-label="카메라 아래로">F ⤓</button>
     </div>
     <p id="input">x=0, y=0</p>
     <p id="controlsHint" class="hint">WASD 또는 방향키로 이동합니다.</p>
@@ -132,7 +134,7 @@
         });
         const keys = new Set();
         const moveKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight"]);
-        const lookKeys = new Set(["KeyQ", "KeyE"]);
+        const lookKeys = new Set(["KeyQ", "KeyE", "KeyR", "KeyF"]);
         let stageControls = new Set(["move"]);
         let jumpCount = 0;
         function handledKey(code) {
@@ -149,7 +151,7 @@
                 `현재 스테이지: ${name || id}`;
             const parts = ["WASD 또는 방향키로 이동"];
             if (stageControls.has("jump")) parts.push("Space 점프");
-            if (stageControls.has("look")) parts.push("Q/E 카메라 회전");
+            if (stageControls.has("look")) parts.push("Q/E 카메라 좌우 · R/F 위아래");
             controlsHint.textContent = parts.join(" · ") + "합니다.";
             for (const button of directionButtons) {
                 const control = button.dataset.control;
@@ -319,9 +321,10 @@
             const x = Number(right) - Number(left);
             const y = Number(forward) - Number(back);
             const look = stageControls.has("look") ? Number(down("KeyE")) - Number(down("KeyQ")) : 0;
+            const lookY = stageControls.has("look") ? Number(down("KeyR")) - Number(down("KeyF")) : 0;
             // Jump is a cumulative press count: a dropped packet cannot lose or repeat a jump.
-            if (send("input", { ...identity(), sequence: ++sequence, x, y, jump: jumpCount, look })) {
-                inputText.textContent = `x=${x}, y=${y}, 점프=${jumpCount}, 시점=${look} / 전송 번호: ${sequence}`;
+            if (send("input", { ...identity(), sequence: ++sequence, x, y, jump: jumpCount, look, lookY })) {
+                inputText.textContent = `x=${x}, y=${y}, 점프=${jumpCount}, 시점=${look}/${lookY} / 전송 번호: ${sequence}`;
             }
         }
         function pressJump() {

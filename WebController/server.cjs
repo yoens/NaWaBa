@@ -414,11 +414,13 @@ function createApplication(options = {}) {
                 if (!ownsGrant(message) || !room.grant.active) return;
                 const jump = message.jump ?? 0;
                 const look = message.look ?? 0;
+                const lookY = message.lookY ?? 0;
                 if (!Number.isSafeInteger(message.sequence) || message.sequence < 0 ||
                     !Number.isFinite(message.x) || !Number.isFinite(message.y) ||
                     Math.abs(message.x) > 1 || Math.abs(message.y) > 1 ||
                     !Number.isSafeInteger(jump) || jump < 0 || jump > 1000000 ||
-                    !Number.isFinite(look) || Math.abs(look) > 1) {
+                    !Number.isFinite(look) || Math.abs(look) > 1 ||
+                    !Number.isFinite(lookY) || Math.abs(lookY) > 1) {
                     revoke(room, "invalid_input");
                     socket.close(1008, "Invalid input");
                     return;
@@ -427,7 +429,7 @@ function createApplication(options = {}) {
                 room.grant.lastSequence = message.sequence;
                 room.grant.lastInputAt = performance.now();
                 if (!send(room, room.host, { type: "input", ...ids(room.grant),
-                    sequence: message.sequence, x: message.x, y: message.y, jump, look })) revoke(room, "host_disconnected");
+                    sequence: message.sequence, x: message.x, y: message.y, jump, look, lookY })) revoke(room, "host_disconnected");
             });
             socket.on("close", () => {
                 if (room.closed || room.participants.get(controllerId) !== socket) return;

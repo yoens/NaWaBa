@@ -15,6 +15,11 @@ public class ClimbCameraController : MonoBehaviour
 
     // 원격 조작자가 Q/E로 카메라를 돌리는 속도(도/초)
     [SerializeField] private float remoteLookSpeed = 120f;
+    // 원격 조작자가 R/F로 카메라를 위아래로 기울이는 속도(도/초)
+    [SerializeField] private float remotePitchSpeed = 70f;
+
+    private const float MinPitch = -20f, MaxPitch = 65f;
+    private float defaultPitch;
 
     private float yaw;
 
@@ -34,7 +39,8 @@ public class ClimbCameraController : MonoBehaviour
         }
 
         yaw = target.eulerAngles.y;
-        pitch = Mathf.Clamp(pitch, -20f, 65f);
+        pitch = Mathf.Clamp(pitch, MinPitch, MaxPitch);
+        defaultPitch = pitch;
     }
 
     private void Update()
@@ -53,6 +59,10 @@ public class ClimbCameraController : MonoBehaviour
             yaw = Mathf.Repeat(
                 yaw + inputRouter.ReadLook() * remoteLookSpeed * Time.deltaTime,
                 360f);
+            // R = 위로 올려다보기(카메라가 내려감), F = 내려다보기
+            pitch = Mathf.Clamp(
+                pitch - inputRouter.ReadLookY() * remotePitchSpeed * Time.deltaTime,
+                MinPitch, MaxPitch);
             return;
         }
 
@@ -91,13 +101,28 @@ public class ClimbCameraController : MonoBehaviour
 
         yaw = Mathf.Repeat(yaw + delta.x * sensitivity, 360f);
         pitch = Mathf.Clamp(
-            pitch - delta.y * sensitivity, -20f, 65f);
+            pitch - delta.y * sensitivity, MinPitch, MaxPitch);
     }
 
     private void LateUpdate()
     {
         if (target == null) return;
+        GetFollowPose(out Vector3 position, out Quaternion rotation);
+        transform.SetPositionAndRotation(position, rotation);
+    }
 
+    // Behind the player, facing where the player faces, at the default tilt
+    // (used at stage start and after the intro camera).
+    public void ResetBehindTarget()
+    {
+        if (target == null) return;
+        yaw = target.eulerAngles.y;
+        pitch = defaultPitch;
+    }
+
+    // Where the follow camera wants to be this frame (the intro camera ends here).
+    public void GetFollowPose(out Vector3 position, out Quaternion cameraRotation)
+    {
         Vector3 pivot =
             target.position + Vector3.up * targetHeight;
 
@@ -118,9 +143,8 @@ public class ClimbCameraController : MonoBehaviour
             actualDistance = Mathf.Max(0.05f, hit.distance - 0.05f);
         }
 
-        transform.SetPositionAndRotation(
-            pivot + backward * actualDistance,
-            rotation);
+        position = pivot + backward * actualDistance;
+        cameraRotation = rotation;
     }
     private void ReleaseCursor()
     {

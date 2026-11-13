@@ -7,6 +7,7 @@ public class RemoteInputSource : MonoBehaviour
 
     private Vector2 moveInput;
     private float lookInput;
+    private float lookYInput;
     private double lastReceivedTime = double.NegativeInfinity;
 
     // The web sends a cumulative jump press count. A higher count means new presses.
@@ -23,12 +24,18 @@ public class RemoteInputSource : MonoBehaviour
 
     public void SetInput(Vector2 move, float look, long jumpCount, double receivedAge = 0)
     {
+        SetInput(move, look, 0f, jumpCount, receivedAge);
+    }
+
+    public void SetInput(Vector2 move, float look, float lookY, long jumpCount, double receivedAge = 0)
+    {
         if (!isActiveAndEnabled)
             return;
 
         if (float.IsNaN(move.x) || float.IsNaN(move.y) ||
             float.IsInfinity(move.x) || float.IsInfinity(move.y) ||
-            float.IsNaN(look) || float.IsInfinity(look) || jumpCount < 0 ||
+            float.IsNaN(look) || float.IsInfinity(look) ||
+            float.IsNaN(lookY) || float.IsInfinity(lookY) || jumpCount < 0 ||
             double.IsNaN(receivedAge) || double.IsInfinity(receivedAge) ||
             receivedAge < 0 || receivedAge >= inputTimeout)
         {
@@ -38,6 +45,7 @@ public class RemoteInputSource : MonoBehaviour
 
         moveInput = Vector2.ClampMagnitude(move, 1f);
         lookInput = Mathf.Clamp(look, -1f, 1f);
+        lookYInput = Mathf.Clamp(lookY, -1f, 1f);
 
         // 수신 후 Unity에서 처리하기까지 걸린 시간도 만료 시간에 포함합니다.
         lastReceivedTime =
@@ -64,6 +72,13 @@ public class RemoteInputSource : MonoBehaviour
     }
 
     // Returns true once per new remote jump press.
+    public float ReadLookY()
+    {
+        ExpireIfStale();
+        return lookYInput;
+    }
+
+    // Returns true once per new remote jump press.
     public bool ConsumeJump()
     {
         if (!jumpPending) return false;
@@ -75,6 +90,7 @@ public class RemoteInputSource : MonoBehaviour
     {
         moveInput = Vector2.zero;
         lookInput = 0f;
+        lookYInput = 0f;
         lastReceivedTime = double.NegativeInfinity;
         lastJumpCount = -1;
         jumpPending = false;
@@ -90,6 +106,7 @@ public class RemoteInputSource : MonoBehaviour
         {
             moveInput = Vector2.zero;
             lookInput = 0f;
+            lookYInput = 0f;
             jumpPending = false;
         }
     }

@@ -18,7 +18,9 @@ public class ClimbActorController : MonoBehaviour
 
     [SerializeField] private float fallResetY = -5f;
 
-    private readonly HashSet<Collider> groundContacts = new();
+    // Ground colliders touched last physics step and the surface normal under each.
+    private readonly Dictionary<Collider, Vector3> groundContacts = new();
+    private readonly List<Collider> staleContacts = new();
 
     private Rigidbody body;
     private Vector3 startPosition;
@@ -29,11 +31,33 @@ public class ClimbActorController : MonoBehaviour
     private bool jumpRequested;
     private float ignoreGroundUntil;
 
+    // Walking up a slope moves the body upward, so the allowed vertical speed grows with
+    // the slope (a jump is still far faster than that).
     public bool IsGrounded =>
         body != null &&
         groundContacts.Count > 0 &&
         Time.fixedTime >= ignoreGroundUntil &&
-        body.linearVelocity.y <= 0.1f;
+        body.linearVelocity.y <= 0.1f + moveSpeed * SlopeTangent(GroundNormal);
+
+    // Average normal of the ground being touched (Vector3.up when none).
+    public Vector3 GroundNormal
+    {
+        get
+        {
+            if (groundContacts.Count == 0) return Vector3.up;
+            Vector3 sum = Vector3.zero;
+            foreach (Vector3 normal in groundContacts.Values) sum += normal;
+            return sum.sqrMagnitude > 0.0001f ? sum.normalized : Vector3.up;
+        }
+    }
+
+    private static float SlopeTangent(Vector3 normal)
+    {
+        float y = Mathf.Clamp(normal.y, 0.05f, 1f);
+        return Mathf.Sqrt(Mathf.Max(0f, 1f - y * y)) / y;
+    }
+
+    private bool defaultUseGravity = true;
 
     // 원격 조작 준비(영상 연결·카운트다운) 중에는 스테이지가 입력을 잠급니다.
     public bool InputLocked { get; set; }
@@ -122,6 +146,7 @@ public class ClimbActorController : MonoBehaviour
 
         startPosition = body.position;
         startRotation = body.rotation;
+        defaultUseGravity = body.useGravity;
         ClearRespawnPoint();
 
         // The stage controller runs first and may already have asked for a freeze
@@ -166,8 +191,10 @@ public class ClimbActorController : MonoBehaviour
             return;
         }
 
-        groundContacts.RemoveWhere(c =>
-            c == null || !c.enabled || !c.gameObject.activeInHierarchy);
+        staleContacts.Clear();
+        foreach (Collider c in groundContacts.Keys)
+            if (c == null || !c.enabled || !c.gameObject.activeInHierarchy) staleContacts.Add(c);
+        foreach (Collider c in staleContacts) groundContacts.Remove(c);
 
         Vector2 input = CanControl
             ? Vector2.ClampMagnitude(inputRouter.ReadMove(), 1f)
@@ -181,11 +208,14 @@ public class ClimbActorController : MonoBehaviour
         velocity.z = direction.z * moveSpeed;
 
         bool grounded = IsGrounded;
+        Vector3 groundNormal = GroundNormal;
+        bool onSlope = grounded && groundNormal.y < 0.999f;
 
         float gravityScale = Mathf.Max(1f, gravityMultiplier);
 
         if (CanControl && wantsJump && grounded)
         {
+            onSlope = false;
             float gravity = Mathf.Abs(Physics.gravity.y) * gravityScale;
             velocity.y = Mathf.Sqrt(2f * gravity * jumpHeight);
 
@@ -194,12 +224,23 @@ public class ClimbActorController : MonoBehaviour
             ignoreGroundUntil = Time.fixedTime + 0.1f;
         }
 
+        if (onSlope)
+        {
+            // Walk along the slope surface at full speed and stay put when idle
+            // (no sliding down, no bouncing off the slope).
+            Vector3 planar = new Vector3(velocity.x, 0f, velocity.z);
+            Vector3 along = Vector3.ProjectOnPlane(planar, groundNormal);
+            if (along.sqrMagnitude > 0.0001f) along = along.normalized * planar.magnitude;
+            velocity = along - groundNormal * 0.5f;
+        }
+        body.useGravity = onSlope ? false : defaultUseGravity;
         body.linearVelocity = velocity;
 
-        // 기본 중력에 추가 중력을 더합니다.
-        body.AddForce(
-            Physics.gravity * (gravityScale - 1f),
-            ForceMode.Acceleration);
+        // 기본 중력에 추가 중력을 더합니다(경사면 위에서는 미끄러지지 않도록 생략).
+        if (!onSlope)
+            body.AddForce(
+                Physics.gravity * (gravityScale - 1f),
+                ForceMode.Acceleration);
 
         if (direction.sqrMagnitude > 0.001f)
         {
@@ -237,6 +278,9 @@ public class ClimbActorController : MonoBehaviour
             Time.fixedTime < ignoreGroundUntil)
             return;
 
+        if (other.isTrigger)
+            return;
+
         if ((groundMask.value & (1 << other.gameObject.layer)) == 0)
             return;
 
@@ -251,16 +295,27 @@ public class ClimbActorController : MonoBehaviour
             if (contact.normal.y >= 0.65f &&
                 contact.point.y < body.worldCenterOfMass.y)
             {
-                groundContacts.Add(other);
+                groundContacts[other] = contact.normal;
                 return;
             }
         }
     }
 
+    // Back to the start of the stage (also forgets any checkpoint).
+    public void RespawnAtStart()
+    {
+        ClearRespawnPoint();
+        if (body != null) ResetPosition();
+    }
+
     private void ResetPosition()
     {
-        body.linearVelocity = Vector3.zero;
-        body.angularVelocity = Vector3.zero;
+        if (!body.isKinematic)
+        {
+            body.linearVelocity = Vector3.zero;
+            body.angularVelocity = Vector3.zero;
+        }
+        frozenVelocity = Vector3.zero;
         body.position = respawnPosition;
         body.rotation = respawnRotation;
 
@@ -275,6 +330,7 @@ public class ClimbActorController : MonoBehaviour
         InputLocked = false;
         jumpRequested = false;
         groundContacts.Clear();
+        if (body != null) body.useGravity = defaultUseGravity;
 
         if (body != null && !body.isKinematic)
         {

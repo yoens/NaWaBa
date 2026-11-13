@@ -56,6 +56,16 @@ public class InputRouter : MonoBehaviour
         return remoteInputSource.ReadLook();
     }
 
+    // 원격 조작자의 카메라 위아래 기울기(-1~1, + = 위). 로컬은 마우스를 사용하므로 0입니다.
+    public float ReadLookY()
+    {
+        if (!useRemoteInput || remoteInputSource == null ||
+            !remoteInputSource.isActiveAndEnabled)
+            return 0f;
+
+        return remoteInputSource.ReadLookY();
+    }
+
     [ContextMenu("Control/Use Remote Input")]
     public void UseRemoteInput()
     {

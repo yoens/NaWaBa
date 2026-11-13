@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 
@@ -22,6 +23,8 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
 
     [Header("Rules")]
     [SerializeField, Min(0f)] private float hostResumeDelay = 1.5f;
+    // Opening shot from the castle gate back to the start (host can skip with Space).
+    [SerializeField] private bool playIntro = true;
 
     [Header("After the run")]
     [SerializeField] private string newGameSceneName = "Stage_Dodge";
@@ -36,6 +39,8 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     private string[] resultLines;
     private RemoteInputSource stageRemoteInputSource;
     private bool useCheckpoints = true;
+    private StageIntroCamera intro;
+    private bool IntroPlaying => intro != null && intro.IsPlaying;
     private int checkpointOrder;
     private GUIStyle titleStyle, lineStyle, buttonStyle, labelStyle;
 
@@ -105,6 +110,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
         if (!usesPersistentGateway)
         {
             inputRouter.UseLocalInput();
+            StartIntro();
             return;
         }
 
@@ -126,6 +132,44 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
         // Freeze at the start point until the carried player's video and countdown are ready.
         if (carried) handoff.OnPreparing();
         actor.Frozen = handoff.Paused;
+        StartIntro();
+    }
+
+    private void StartIntro()
+    {
+        if (!playIntro) return;
+        ClimbCameraController followCamera = FindInScene<ClimbCameraController>();
+        intro = StageIntroCamera.For(followCamera);
+        if (intro == null) return;
+        actor.Frozen = true;
+        intro.Play(BuildIntroRoute(), followCamera, null);
+    }
+
+    // Gate → built course platforms (last to first) → player.
+    private List<Vector3> BuildIntroRoute()
+    {
+        var route = new List<Vector3>();
+        ClimbGoal goal = FindInScene<ClimbGoal>();
+        if (goal != null) route.Add(goal.transform.position);
+
+        GameObject built = GameObject.Find("ClimbCourse (built)");
+        if (built != null && built.scene == gameObject.scene)
+        {
+            var platforms = new List<Transform>();
+            foreach (Transform child in built.transform)
+                if (child.name.Length > 2 && char.IsDigit(child.name[0]) && !child.name.StartsWith("00_"))
+                    platforms.Add(child);
+            platforms.Sort((a, b) => string.CompareOrdinal(b.name, a.name));
+            foreach (Transform platform in platforms)
+            {
+                Collider area = platform.GetComponentInChildren<Collider>();
+                route.Add(area != null
+                    ? new Vector3(area.bounds.center.x, area.bounds.max.y, area.bounds.center.z)
+                    : platform.position);
+            }
+        }
+        route.Add(actor.transform.position);
+        return route;
     }
 
     private void OnDisable()
@@ -146,6 +190,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             actor.Frozen = false;
             actor.InputLocked = false;
         }
+        if (intro != null) intro.Skip();
         handoff?.Reset();
     }
 
@@ -164,11 +209,12 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             gateway.AllowRemoteApproval = gateway.isActiveAndEnabled && !cleared &&
                 inputRouter.isActiveAndEnabled;
 
-        actor.Frozen = handoff.Paused || cleared;
-        if (!cleared && !handoff.Paused)
+        actor.Frozen = handoff.Paused || cleared || IntroPlaying;
+        if (!cleared && !handoff.Paused && !IntroPlaying)
             RunRecord.AddControlTime(gateway, deltaTime);
 
-        SetStatus(cleared ? "ALL CLEAR!" : handoff.Paused ? handoff.Label : stageName);
+        SetStatus(cleared ? "ALL CLEAR!" : handoff.Paused ? handoff.Label :
+            IntroPlaying ? "REACH THE CASTLE GATE!\n(SPACE: SKIP)" : stageName);
     }
 
     private void OnRemotePreparing()
@@ -230,7 +276,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
     // Called by ClimbGoal while the player stands in the goal area. Counts once.
     public void ReachGoal()
     {
-        if (!initialized || cleared || handoff.Paused) return;
+        if (!initialized || cleared || handoff.Paused || IntroPlaying) return;
         cleared = true;
         RunRecord.Player player = RunRecord.NoteClear(gateway, stageName);
         RunRecord.Finish();

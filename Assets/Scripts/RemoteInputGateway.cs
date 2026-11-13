@@ -302,6 +302,7 @@ public class RemoteInputGateway : MonoBehaviour
         public float y;
         public long jump;      // cumulative jump presses in this grant
         public float look;     // camera yaw input, -1..1
+        public float lookY;    // camera pitch input, -1..1 (+ = look up); 0 when not sent
         public string stageId;
         public string stageName;
         public string controls;
@@ -796,7 +797,8 @@ public class RemoteInputGateway : MonoBehaviour
                     float.IsInfinity(message.x) || float.IsInfinity(message.y) ||
                     Mathf.Abs(message.x) > 1 || Mathf.Abs(message.y) > 1 ||
                     message.jump < 0 || float.IsNaN(message.look) || float.IsInfinity(message.look) ||
-                    Mathf.Abs(message.look) > 1)
+                    Mathf.Abs(message.look) > 1 || float.IsNaN(message.lookY) ||
+                    float.IsInfinity(message.lookY) || Mathf.Abs(message.lookY) > 1)
                     throw new InvalidOperationException("Invalid input.");
                 if (message.sequence <= lastSequence) continue;
                 lastSequence = message.sequence;
@@ -813,7 +815,7 @@ public class RemoteInputGateway : MonoBehaviour
                 !remoteInputSource.isActiveAndEnabled))
                 ReclaimControl();
             if (latest != null && controlling && CurrentGrant(latest))
-                remoteInputSource.SetInput(new Vector2(latest.x, latest.y), latest.look, latest.jump,
+                remoteInputSource.SetInput(new Vector2(latest.x, latest.y), latest.look, latest.lookY, latest.jump,
                     ClockNow() - receivedAt);
         }
         catch (Exception error)
