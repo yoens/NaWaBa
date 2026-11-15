@@ -45,6 +45,20 @@ public class NaWaBaDifficulty : ScriptableObject
     [Tooltip("Moving platform speed (1 = as built).")]
     [SerializeField, Range(0.3f, 3f)] private float moverSpeed = 1f;
 
+    [Header("Stage 3 · 성문 열기 (memory puzzle)")]
+    [Tooltip("Rounds to clear; each round the sequence is one longer.")]
+    [SerializeField, Range(1, 8)] private int memoryRounds = 4;
+    [Tooltip("Sequence length in the first round.")]
+    [SerializeField, Range(1, 8)] private int memoryStartLength = 3;
+    [Tooltip("Seconds each lamp of the sequence is shown.")]
+    [SerializeField, Range(0.2f, 2f)] private float memoryShowStep = 0.7f;
+    [Tooltip("After a mistake: on = a new random sequence, off = the same one again.")]
+    [SerializeField] private bool memoryNewSequenceOnMistake;
+
+    [Header("Stage 4 · 성 안 함정 복도")]
+    [Tooltip("Trap speed (1 = as built). Respawn after a hit follows the stage 2 Respawn setting.")]
+    [SerializeField, Range(0.3f, 3f)] private float trapSpeed = 1f;
+
     public string DisplayName => displayName;
     public string WebLabel => webLabel;
     public int Order => order;
@@ -59,6 +73,11 @@ public class NaWaBaDifficulty : ScriptableObject
     public bool UseCheckpoints => respawn == RespawnPolicy.Checkpoint;
     public string CourseName => courseName;
     public float MoverSpeed => moverSpeed;
+    public float TrapSpeed => trapSpeed;
+    public int MemoryRounds => memoryRounds;
+    public int MemoryStartLength => memoryStartLength;
+    public float MemoryShowStep => memoryShowStep;
+    public bool MemoryNewSequenceOnMistake => memoryNewSequenceOnMistake;
 
     public const string ResourceFolder = "Difficulty";
     public const string DefaultName = "Normal";

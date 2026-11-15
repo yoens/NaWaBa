@@ -56,7 +56,7 @@ public class ClimbCheckpoint : MonoBehaviour
     public void MarkReached(bool value)
     {
         reached = value;
-        if (flagRenderer != null) flagRenderer.material.color = value ? reachedColor : idleColor;
+        RuntimeMaterials.Paint(flagRenderer, value ? reachedColor : idleColor);
     }
 
     private void BuildMarker(Collider area)
@@ -70,6 +70,7 @@ public class ClimbCheckpoint : MonoBehaviour
         pole.transform.SetParent(transform, true);
         pole.transform.position = basePoint + Vector3.up * 0.6f;
         pole.transform.localScale = new Vector3(0.06f, 0.6f, 0.06f);
+        RuntimeMaterials.Paint(pole.GetComponent<Renderer>(), new Color(0.85f, 0.85f, 0.85f));
 
         GameObject flag = GameObject.CreatePrimitive(PrimitiveType.Cube);
         flag.name = "CheckpointFlag";
@@ -78,6 +79,6 @@ public class ClimbCheckpoint : MonoBehaviour
         flag.transform.position = basePoint + new Vector3(0f, 1.05f, -0.22f);
         flag.transform.localScale = new Vector3(0.03f, 0.25f, 0.4f);
         flagRenderer = flag.GetComponent<Renderer>();
-        if (flagRenderer != null) flagRenderer.material.color = idleColor;
+        RuntimeMaterials.Paint(flagRenderer, idleColor);
     }
 }

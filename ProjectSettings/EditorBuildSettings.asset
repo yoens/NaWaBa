@@ -20,6 +20,12 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/Stage_Climb.unity
     guid: 9ac21d04c2b7ccb41bc5da780393dfaa
+  - enabled: 1
+    path: Assets/Scenes/Stage_Gate.unity
+    guid: 2f82f333c25c46d0800ffa807ad4cd73
+  - enabled: 1
+    path: Assets/Scenes/Stage_Keep.unity
+    guid: 62c472f814c4425bb24d27b88e3f6978
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   m_UseUCBPForAssetBundles: 0

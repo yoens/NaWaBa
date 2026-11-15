@@ -38,12 +38,30 @@ public class ClimbCourse : ScriptableObject
     public GameObject startPadPrefab;
     [Min(2f)] public float startPadWidth = 7f;
 
+    [Header("Start = summit of stage 1")]
+    [Tooltip("Start on a copy of stage 1's summit (snow, flag, walls, the slope going down behind) " +
+             "instead of a plain start pad. Keep the numbers equal to SnowSlope in Stage_Dodge.")]
+    public bool startAsSummit = true;
+    public float summitWidth = 18f;      // SnowSlope Lane Width
+    public float summitDepth = 12f;      // SnowSlope Summit Depth
+    public float summitWallHeight = 2.4f;
+    public float summitSlopeAngle = 15f;
+    [Tooltip("How much of the slope below the summit is shown behind the start (m).")]
+    public float summitSlopeTail = 25f;
+
     [Header("Course")]
     [Tooltip("Steps from the start pad to the gate. The last one holds the goal and the gate.")]
     public List<Step> steps = new List<Step>();
 
     [Tooltip("Same number = same prop placement every build.")]
     public int decorSeed = 11;
+
+    [Header("Arrival (same courtyard as the start of stage 3)")]
+    [Tooltip("End the course on the stage 3 courtyard (snow yard, plates, lamps, gate) instead " +
+             "of a platform in front of the gate.")]
+    public bool endWithCourtyard = true;
+    [Min(0f)] public float courtyardGap = 1.4f;
+    public float courtyardRise = 0.5f;
 
     [Header("Safety check")]
     [Tooltip("Warn when a jump leaves less than this many metres to spare.")]
@@ -62,6 +80,10 @@ public class ClimbCourse : ScriptableObject
     public float wallHalfLength = 14f;
     [Tooltip("How far the wall and towers reach down below the last platform (into the clouds).")]
     public float wallDepth = 14f;
+
+    [Tooltip("Build the gate and the castle from the Kenney Castle Kit prefabs (Assets/Prefabs/Castle). " +
+             "Off, or kit missing = simple shapes.")]
+    public bool useCastleKit = true;
 
     [Header("Castle in the background")]
     public bool buildCastle = true;

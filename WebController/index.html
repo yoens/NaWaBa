@@ -61,6 +61,11 @@
         <button id="playVideo" hidden>영상 재생</button>
     </div>
     <p id="videoStats" class="hint">승인 후 게임 영상이 표시됩니다.</p>
+    <details id="diagBox" class="hint">
+        <summary>영상이 연결되지 않나요? 연결 진단</summary>
+        <button id="diagButton" type="button">이 PC의 연결 진단 실행 (약 10초)</button>
+        <pre id="diagText" style="white-space:pre-wrap;user-select:all"></pre>
+    </details>
     <section id="resultPanel" role="status" aria-live="polite" hidden>
         <h2 id="resultTitle"></h2>
         <p id="resultDescription"></p>
@@ -178,6 +183,15 @@
             onReady: id => { if (id === grantId) tryStartCountdown(); },
             onFailure: videoFailure,
             onStatus: text => { statusText.textContent = text; }
+        });
+        // Connection self-test (for a PC where the video never connects). Copy the text to the host.
+        document.getElementById("diagButton").addEventListener("click", async event => {
+            const button = event.currentTarget, out = document.getElementById("diagText");
+            button.disabled = true;
+            out.textContent = "진단 중… (약 10초)";
+            try { out.textContent = (await videoReceiver.diagnose()).join("\n"); }
+            catch (error) { out.textContent = "진단 실패: " + (error && error.message ? error.message : error); }
+            button.disabled = false;
         });
         const reasons = {
             round_cleared: "스테이지 클리어! 호스트가 다음 스테이지로 이동합니다.",

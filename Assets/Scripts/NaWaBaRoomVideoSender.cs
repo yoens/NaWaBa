@@ -84,7 +84,13 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
         }
         if (!string.IsNullOrEmpty(grant) && !gateway.IsControlling &&
             Time.realtimeSinceStartupAsDouble - startedAt > 65)
-            failure = "Video setup timed out.";
+            failure = "Video setup timed out. " + candidateSummary;
+        if (disconnectedAt > 0 && string.IsNullOrEmpty(failure) &&
+            Time.realtimeSinceStartupAsDouble - disconnectedAt > 4)
+        {
+            disconnectedAt = 0;
+            failure = "Video connection Disconnected for 4 s. " + candidateSummary;
+        }
     }
 
     // Fail closed on C# exceptions as well as WebRTC operation errors.
@@ -130,9 +136,10 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
             if (peer != currentPeer || grant != currentGrant) return;
             Status = "VIDEO: " + state;
             gateway.SetLocalVideoConnected(grant, state == RTCPeerConnectionState.Connected);
-            if (state == RTCPeerConnectionState.Failed || state == RTCPeerConnectionState.Disconnected ||
-                state == RTCPeerConnectionState.Closed)
-                failure = "Video connection " + state;
+            if (state == RTCPeerConnectionState.Failed || state == RTCPeerConnectionState.Closed)
+                failure = "Video connection " + state + " " + candidateSummary;
+            // A short drop often recovers by itself; Update() fails it only after 4 seconds.
+            disconnectedAt = state == RTCPeerConnectionState.Disconnected ? Time.realtimeSinceStartupAsDouble : 0;
         };
         sender = peer.AddTrack(track, stream);
         foreach (var transceiver in peer.GetTransceivers())
@@ -144,13 +151,20 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
         var local = peer.SetLocalDescription(ref description);
         yield return local;
         if (local.IsError) throw new InvalidOperationException(local.Error.message);
-        double deadline = Time.realtimeSinceStartupAsDouble + 15;
+        // A blocked STUN server or extra network adapters (VPN, virtual machines) can make
+        // gathering take 10 s or more: after 4 s send the offer with what was found so far.
+        double gatherStart = Time.realtimeSinceStartupAsDouble;
         while (peer.GatheringState != RTCIceGatheringState.Complete)
         {
-            if (Time.realtimeSinceStartupAsDouble >= deadline)
-                throw new InvalidOperationException("ICE gathering timed out.");
+            double waited = Time.realtimeSinceStartupAsDouble - gatherStart;
+            bool found = peer.LocalDescription.sdp != null && peer.LocalDescription.sdp.Contains("a=candidate");
+            if (waited >= 4 && found) break;
+            if (waited >= 15) throw new InvalidOperationException("ICE gathering found no candidates (network blocked?).");
             yield return null;
         }
+        candidateSummary = SummarizeCandidates(peer.LocalDescription.sdp,
+            Time.realtimeSinceStartupAsDouble - gatherStart, peer.GatheringState == RTCIceGatheringState.Complete);
+        Debug.Log("[NaWaBa Room Video] " + candidateSummary, this);
         if (!gateway.SendVideoOffer(grant, peer.LocalDescription.sdp))
             throw new InvalidOperationException("Could not send room video offer.");
         Debug.Log("[NaWaBa Room Video] 3 OFFER SENT", this);
@@ -174,6 +188,31 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
             throw new InvalidOperationException("Video settings failed: " + result.errorType);
         gateway.SetLocalVideoConnected(grant, peer.ConnectionState == RTCPeerConnectionState.Connected);
         Debug.Log("[NaWaBa Room Video] 4 ANSWER APPLIED - 720p / max 30fps", this);
+    }
+
+    private string candidateSummary = "";
+    private double disconnectedAt;
+
+    // "ICE candidates host 2 / srflx 1 / relay 0 (3.1 s)". srflx 0 = this PC could not reach
+    // any STUN server (UDP blocked by a VPN, security software or the network).
+    private static string SummarizeCandidates(string sdp, double seconds, bool complete)
+    {
+        int host = Count(sdp, " typ host"), srflx = Count(sdp, " typ srflx"), relay = Count(sdp, " typ relay");
+        string text = $"ICE candidates host {host} / srflx {srflx} / relay {relay} " +
+            $"({seconds:0.0} s{(complete ? "" : ", gathering cut short")})";
+        if (srflx == 0 && relay == 0)
+            text += " - NO STUN RESULT: UDP looks blocked on this PC (VPN / firewall / security software). " +
+                "Only players on the same local network can connect.";
+        return text;
+    }
+
+    private static int Count(string text, string part)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        int count = 0;
+        for (int i = text.IndexOf(part, StringComparison.Ordinal); i >= 0; i = text.IndexOf(part, i + part.Length, StringComparison.Ordinal))
+            count++;
+        return count;
     }
 
     // Same STUN/TURN list as the browsers (from the server); Google STUN when none was sent.
@@ -259,6 +298,8 @@ public sealed class NaWaBaRoomVideoSender : MonoBehaviour
     private void Cleanup()
     {
         StopAllCoroutines();
+        disconnectedAt = 0;
+        candidateSummary = "";
         if (peer != null)
         {
             peer.OnConnectionStateChange = null;

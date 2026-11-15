@@ -48,6 +48,7 @@ public class ClimbGoal : MonoBehaviour
         pole.transform.SetParent(transform, true);
         pole.transform.position = basePoint + Vector3.up * 1f;
         pole.transform.localScale = new Vector3(0.08f, 1f, 0.08f);
+        RuntimeMaterials.Paint(pole.GetComponent<Renderer>(), new Color(0.85f, 0.85f, 0.85f));
 
         GameObject flag = GameObject.CreatePrimitive(PrimitiveType.Cube);
         flag.name = "GoalFlag";
@@ -56,6 +57,6 @@ public class ClimbGoal : MonoBehaviour
         flag.transform.position = basePoint + new Vector3(0.3f, 1.75f, 0f);
         flag.transform.localScale = new Vector3(0.55f, 0.35f, 0.04f);
         Renderer flagRenderer = flag.GetComponent<Renderer>();
-        if (flagRenderer != null) flagRenderer.material.color = markerColor;
+        RuntimeMaterials.Paint(flagRenderer, markerColor);
     }
 }

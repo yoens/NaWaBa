@@ -17,3 +17,7 @@ MonoBehaviour:
     title: "1 \xB7 \uB208\uB369\uC774 \uD53C\uD558\uBA70 \uC624\uB974\uAE30"
   - sceneName: Stage_Climb
     title: "2 \xB7 \uC131\uBB38 \uC55E\uC73C\uB85C"
+  - sceneName: Stage_Gate
+    title: "3 \xB7 \uC131\uBB38 \uC5F4\uAE30"
+  - sceneName: Stage_Keep
+    title: "4 \xB7 \uC131 \uC548 \uD568\uC815 \uBCF5\uB3C4"

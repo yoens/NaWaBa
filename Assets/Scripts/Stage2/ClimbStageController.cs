@@ -160,6 +160,13 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             courseRoot = courses.Find(c => c.name.EndsWith(" " + wanted) || c.name == wanted);
         if (courseRoot == null) courseRoot = courses.Find(c => c.activeSelf) ?? courses[0];
         foreach (GameObject course in courses) course.SetActive(course == courseRoot);
+
+        // One shared castle for every course: stand it on this course's last platform.
+        Transform anchor = courseRoot.transform.Find("CastleAnchor");
+        if (anchor != null)
+            foreach (GameObject root in gameObject.scene.GetRootGameObjects())
+                if (root.name == "Castle (shared)")
+                    root.transform.SetPositionAndRotation(anchor.position, anchor.rotation);
         Debug.Log($"[Climb] course: {courseRoot.name}" +
             (!string.IsNullOrEmpty(wanted) && !courseRoot.name.EndsWith(wanted)
                 ? $" ('{wanted}' is not built in this scene)" : ""), this);

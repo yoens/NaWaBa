@@ -32,7 +32,8 @@ function createApplication(options = {}) {
     const log = options.log || console.log;
     // STUN/TURN servers handed to both the Unity host and the browsers (same list for both).
     const iceServers = sanitizeIceServers(options.iceServers) ||
-        [{ urls: ["stun:stun.l.google.com:19302"] }];
+        // Several public STUN servers: if one is blocked or slow on a PC, another still answers.
+        [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun.cloudflare.com:3478"] }];
     const rooms = new Map();
 
 

@@ -28,6 +28,9 @@ public class SnowSlope : MonoBehaviour
     [SerializeField, Min(0f)] private float sideWidth = 16f;        // snowfield outside the walls
     [SerializeField, Min(1.6f)] private float wallHeight = 2.4f;    // higher than a jump
     [SerializeField] private int groundLayer = 6;                   // must be in the player's Ground Mask
+    [Tooltip("No wall at the far edge of the summit: the view opens onto stage 2 " +
+             "(floating islands and the castle, added by the builder menu).")]
+    [SerializeField] private bool openSummitEdge = true;
 
     [Header("Snowballs (difficulty overrides these)")]
     [SerializeField, Min(0.1f)] private float spawnInterval = 1f;
@@ -35,6 +38,9 @@ public class SnowSlope : MonoBehaviour
     [SerializeField, Min(0.5f)] private float snowballSpeed = 7f;
     [SerializeField] private Vector2 snowballRadius = new Vector2(0.55f, 0.85f);
     [SerializeField, Range(0f, 1f)] private float doubleSpawnChance = 0.3f;
+    [Tooltip("Snowballs appear this many metres behind the top edge, on the summit, and roll " +
+             "across it before going down - so players see them coming. 0 = right at the edge.")]
+    [SerializeField, Min(0f)] private float spawnBehindTop = 8f;
 
     [Header("Obstacles on the slope (block snowballs, can be climbed)")]
     [SerializeField] private GameObject[] obstaclePrefabs;          // rocks, crates, barrels ...
@@ -139,6 +145,14 @@ public class SnowSlope : MonoBehaviour
 
     private Vector3 Origin => transform.position;
 
+    // For the editor builders (stage 1 view onto stage 2, stage 2 start = this summit).
+    public float LaneWidth => laneWidth;
+    public float SummitDepth => summitDepth;
+    public float WallHeight => wallHeight;
+    public float Angle => angle;
+    // Centre of the summit's far edge, in this object's space.
+    public Vector3 SummitFarEdgeLocal => new Vector3(0f, Rise, SummitZ + summitDepth);
+
     private void Awake()
     {
         InitShape();
@@ -232,7 +246,7 @@ public class SnowSlope : MonoBehaviour
 
     private void OnDestroy()
     {
-        if (ballMaterial != null) Destroy(ballMaterial);
+        // ballMaterial is shared (RuntimeMaterials); nothing to destroy.
     }
 
     // ---------- snowballs ----------
@@ -354,7 +368,8 @@ public class SnowSlope : MonoBehaviour
         var ball = new Ball
         {
             transform = go.transform, body = body, radius = radius,
-            x = x, travelled = 0f
+            // Negative = still on the summit plateau, behind the top edge.
+            x = x, travelled = -Mathf.Min(spawnBehindTop, summitDepth - 1f)
         };
         balls.Add(ball);
         Place(ball, 0f);
@@ -370,7 +385,9 @@ public class SnowSlope : MonoBehaviour
         float r = CurrentRadius(ball);
         ball.transform.localScale = Vector3.one * (r * 2f);
         Vector3 top = Origin + new Vector3(ball.x, Rise, SummitZ);
-        Vector3 position = top + down * ball.travelled + normal * r;
+        Vector3 position = ball.travelled < 0f
+            ? top + new Vector3(0f, r, -ball.travelled)          // rolling across the summit
+            : top + down * ball.travelled + normal * r;          // rolling down the slope
         ball.spin += snowballSpeed / Mathf.Max(0.1f, r) * Mathf.Rad2Deg * dt;
         Quaternion rotation = Quaternion.AngleAxis(-ball.spin, Vector3.right);
         if (dt > 0f) { ball.body.MovePosition(position); ball.body.MoveRotation(rotation); }
@@ -380,11 +397,7 @@ public class SnowSlope : MonoBehaviour
     private Material BallMaterial()
     {
         if (ballMaterial != null) return ballMaterial;
-        GameObject probe = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        ballMaterial = new Material(probe.GetComponent<Renderer>().sharedMaterial) { name = "Snowball" };
-        Destroy(probe);
-        ballMaterial.color = snowballColor;
-        if (ballMaterial.HasProperty("_BaseColor")) ballMaterial.SetColor("_BaseColor", snowballColor);
+        ballMaterial = RuntimeMaterials.Lit(snowballColor);
         return ballMaterial;
     }
 
@@ -457,14 +470,19 @@ public class SnowSlope : MonoBehaviour
         // Back walls behind the start and the summit.
         GameObject back = Box("WallBack", new Vector3(0f, wallHeight * 0.5f - 0.5f, padBack - 0.25f),
             new Vector3(laneWidth + 1f, wallHeight + 1f, 0.5f), Quaternion.identity, wallColor, 0);
-        GameObject end = Box("WallTop", new Vector3(0f, rise + wallHeight * 0.5f - 0.5f, SummitZ + summitDepth + 0.25f),
-            new Vector3(laneWidth + 1f, wallHeight + 1f, 0.5f), Quaternion.identity, wallColor, 0);
+        GameObject end = openSummitEdge ? null :
+            Box("WallTop", new Vector3(0f, rise + wallHeight * 0.5f - 0.5f, SummitZ + summitDepth + 0.25f),
+                new Vector3(laneWidth + 1f, wallHeight + 1f, 0.5f), Quaternion.identity, wallColor, 0);
         if (wallBlockPrefab != null)
         {
-            Hide(back); Hide(end);
+            Hide(back);
             WallBlocks(new Vector3(-laneWidth * 0.5f, 0f, padBack - 0.25f), new Vector3(laneWidth * 0.5f, 0f, padBack - 0.25f), Vector3.up);
-            WallBlocks(new Vector3(-laneWidth * 0.5f, rise, SummitZ + summitDepth + 0.25f),
-                new Vector3(laneWidth * 0.5f, rise, SummitZ + summitDepth + 0.25f), Vector3.up);
+            if (end != null)
+            {
+                Hide(end);
+                WallBlocks(new Vector3(-laneWidth * 0.5f, rise, SummitZ + summitDepth + 0.25f),
+                    new Vector3(laneWidth * 0.5f, rise, SummitZ + summitDepth + 0.25f), Vector3.up);
+            }
         }
 
         // Summit goal: land anywhere on the plateau.
@@ -856,16 +874,8 @@ public class SnowSlope : MonoBehaviour
         return material;
     }
 
-    private static Material defaultMaterial;
-
-    private static Material DefaultMaterial()
-    {
-        if (defaultMaterial != null) return defaultMaterial;
-        GameObject probe = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        defaultMaterial = probe.GetComponent<Renderer>().sharedMaterial;
-        DestroyImmediate(probe);
-        return defaultMaterial;
-    }
+    // URP Lit template (a primitive's own default material turns pink in builds).
+    private static Material DefaultMaterial() => RuntimeMaterials.Template;
 
     private static void Tint(Material material, Color color)
     {

@@ -318,6 +318,12 @@ public class ClimbActorController : MonoBehaviour
         }
     }
 
+    // Back to the current respawn point (the last checkpoint, or the start).
+    public void Respawn()
+    {
+        if (body != null) ResetPosition();
+    }
+
     // Back to the start of the stage (also forgets any checkpoint).
     public void RespawnAtStart()
     {

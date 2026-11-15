@@ -25,3 +25,8 @@ MonoBehaviour:
   respawn: 1
   courseName: ClimbCourse_Long
   moverSpeed: 1.3
+  memoryRounds: 5
+  memoryStartLength: 4
+  memoryShowStep: 0.55
+  memoryNewSequenceOnMistake: 1
+  trapSpeed: 1.25
