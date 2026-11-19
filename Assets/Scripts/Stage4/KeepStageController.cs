@@ -96,6 +96,24 @@ public class KeepStageController : MonoBehaviour, IStageFlow
             Debug.LogError("KeepStageController: 출구(KeepGoal)가 없습니다. " +
                 "'NaWaBa > 성 내부 만들기 (Stage_Keep)'를 실행하고 씬을 저장하세요.", this);
 
+        // Per-cell floor/wall boxes snag the player's box collider at their seams; merge them
+        // unless the scene already has them merged (menu "NaWaBa/성 내부 충돌 합치기").
+        // (Found through the exit: during a scene load Awake runs before scene.isLoaded is true.)
+        KeepGoal exit = FindInScene<KeepGoal>();
+        Transform keep = exit != null ? exit.transform.root : null;
+        if (keep == null || keep.name != KeepCollision.RootName)
+            Debug.LogWarning("[Keep] \"" + KeepCollision.RootName + "\" not found - collision boxes not merged.", this);
+        else if (KeepCollision.IsMerged(keep))
+            Debug.Log("[Keep] collision boxes already merged in the scene", this);
+        else
+        {
+            KeepCollision.Result merged = KeepCollision.Merge(keep);
+            Debug.Log($"[Keep] merged collision boxes {merged.before} -> {merged.after} (skipped {merged.skipped})", this);
+        }
+        KeepStuckProbe probe = actor.GetComponent<KeepStuckProbe>();
+        if (probe == null) probe = actor.gameObject.AddComponent<KeepStuckProbe>();
+        probe.Configure(inputRouter);
+
         TrapClock.Time = 0f;
         TrapClock.Delta = 0f;
         if (gateway != null) gateway.AllowRemoteApproval = false;

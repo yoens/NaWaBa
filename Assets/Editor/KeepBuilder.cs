@@ -144,6 +144,9 @@ public static class KeepBuilder
             }
         }
 
+        // One box per cell leaves seams the player's box collider snags on; merge them.
+        KeepCollisionMerger.Merge(root.transform);
+
         Undo.CollapseUndoOperations(group);
         EditorSceneManager.MarkSceneDirty(scene);
         Selection.activeGameObject = root;
