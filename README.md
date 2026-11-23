@@ -5,7 +5,7 @@
 
 <!-- TODO: 대표 GIF 1개 (교대 순간이 보이는 10초 내외) — 생기면 아래 이미지를 GIF로 교체 -->
 <p align="center">
-  <img src="docs/screenshots/web-remote-play.png" width="720" alt="참가자가 브라우저에서 호스트의 게임 화면을 보며 조작하는 모습">
+  <img src="./screenshots/web-remote-play.png" width="720" alt="참가자가 브라우저에서 호스트의 게임 화면을 보며 조작하는 모습">
   <br><sub>참가자 브라우저 화면 — 호스트 게임 영상을 보며 WASD/Space로 직접 조작 (1280×720, 30fps)</sub>
 </p>
 
@@ -34,7 +34,7 @@
 
 | ① 참가자: 링크로 들어와 조작 신청 | ② 호스트: Approve로 승인 | ③ 참가자: 영상을 보며 조작 |
 |---|---|---|
-| <img src="docs/screenshots/web-join.png" width="260"> | <img src="docs/screenshots/host-approve.png" width="260"> | <img src="docs/screenshots/web-remote-play.png" width="260"> |
+| <img src="./screenshots/web-join.png" width="260"> | <img src="./screenshots/host-approve.png" width="260"> | <img src="./screenshots/web-remote-play.png" width="260"> |
 
 ### 스테이지 구성
 
@@ -49,7 +49,7 @@
 
 | 1 눈 비탈 | 2 성문 앞으로 | 3 성문 열기 | 4 성 안 함정 복도 |
 |---|---|---|
-| <img src="docs/screenshots/stage1-snow.png" width="260"> | <img src="docs/screenshots/stage2.png" width="260"> | <img src="docs/screenshots/stage3.png" width="260"> | <img src="docs/screenshots/stage4-keep.png" width="260"> |
+| <img src="./screenshots/stage1-snow.png" width="260"> | <img src="./screenshots/stage2.png" width="260"> | <img src="./screenshots/stage3.png" width="260"> | <img src="./screenshots/stage4-keep.png" width="260"> |
 
 
 
