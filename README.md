@@ -49,7 +49,7 @@
 
 | 1 눈 비탈 | 2 성문 앞으로 | 3 성문 열기 | 4 성 안 함정 복도 |
 |---|---|---|
-| <img src="./screenshots/stage1-snow.png" width="260"> | <img src="./screenshots/stage2.png" width="260"> | <img src="./screenshots/stage3.png" width="260"> | <img src="./screenshots/stage4-keep.png" width="260"> |
+| <img src="./screenshots/stage1-snow.png" width="200"> | <img src="./screenshots/stage2.png" width="200"> | <img src="./screenshots/stage3.png" width="200"> | <img src="./screenshots/stage4-keep.png" width="200"> |
 
 
 
