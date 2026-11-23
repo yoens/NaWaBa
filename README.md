@@ -48,7 +48,7 @@
 | 4 | 성 안 함정 복도 | 진자·가시·슬라이더·발사 함정의 타이밍을 읽고 통과 |
 
 | 1 눈 비탈 | 2 성문 앞으로 | 3 성문 열기 | 4 성 안 함정 복도 |
-|---|---|---|
+|---|---|---|---|
 | <img src="./screenshots/stage1-snow.png" width="200"> | <img src="./screenshots/stage2.png" width="200"> | <img src="./screenshots/stage3.png" width="200"> | <img src="./screenshots/stage4-keep.png" width="200"> |
 
 
