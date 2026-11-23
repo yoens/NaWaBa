@@ -47,11 +47,10 @@
 | 3 | 성문 열기 | 발판이 켜지는 순서를 기억해 밟는 기억 퍼즐 |
 | 4 | 성 안 함정 복도 | 진자·가시·슬라이더·발사 함정의 타이밍을 읽고 통과 |
 
-| 1 눈 비탈 | 2 성문 앞으로 | 4 성 안 함정 복도 |
+| 1 눈 비탈 | 2 성문 앞으로 | 3 성문 열기 | 4 성 안 함정 복도 |
 |---|---|---|
-| <img src="docs/screenshots/stage1-snow.png" width="260"> | <img src="docs/screenshots/host-approve.png" width="260"> | <img src="docs/screenshots/stage4-keep.png" width="260"> |
+| <img src="docs/screenshots/stage1-snow.png" width="260"> | <img src="docs/screenshots/stage2.png" width="260"> | <img src="docs/screenshots/stage3.png" width="260"> | <img src="docs/screenshots/stage4-keep.png" width="260"> |
 
-<!-- TODO: 3스테이지(기억 퍼즐) 스크린샷 추가 → docs/screenshots/stage3-gate.png -->
 
 
 ---
