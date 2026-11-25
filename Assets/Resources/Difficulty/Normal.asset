@@ -30,3 +30,7 @@ MonoBehaviour:
   memoryShowStep: 0.7
   memoryNewSequenceOnMistake: 0
   trapSpeed: 1
+  ghostSpeed: 1
+  cryptShowTime: 4
+  cryptRunSpeed: 10
+  mirrorRooms: 3

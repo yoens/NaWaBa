@@ -46,6 +46,15 @@ public class ClimbCharacterAnimator : MonoBehaviour
             return;
         }
 
+        if (actor.ScriptedVelocity.HasValue)
+        {
+            Vector3 scripted = actor.ScriptedVelocity.Value;
+            animator.SetFloat(SpeedId, new Vector2(scripted.x, scripted.z).magnitude);
+            animator.SetBool(GroundedId, actor.ScriptedGrounded);
+            animator.SetFloat(VerticalSpeedId, scripted.y);
+            return;
+        }
+
         Vector3 velocity = body.linearVelocity;
 
         float horizontalSpeed = new Vector2(

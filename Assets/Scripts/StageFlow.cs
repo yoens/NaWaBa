@@ -24,14 +24,38 @@ public static class StageSceneLoader
         return fallback;
     }
 
-    // Stage after the current scene, or "" when the current scene is the last one (run ends).
+    // Stage after the current scene, or "" when the current scene is the last one of its
+    // region (run ends: result screen, then the world map).
     // Without a stage list (or when the scene is not in it) the fallback is used.
     public static string NextStage(string currentScene, string fallback)
     {
         NaWaBaStageList list = NaWaBaStageList.Instance;
         int index = list != null ? list.IndexOf(currentScene) : -1;
         if (index < 0) return fallback;
-        return index + 1 < list.stages.Count ? list.stages[index + 1].sceneName : "";
+        if (index + 1 >= list.stages.Count) return "";
+        NaWaBaStageList.Stage next = list.stages[index + 1];
+        return next != null && next.region == list.stages[index].region ? next.sceneName : "";
+    }
+
+    // ---------- world map (regions) ----------
+
+    public const string MapScene = "WorldMap";
+
+    // Call when the last stage of a region is cleared (nextScene = what NextStage returned).
+    // Opens the next region on the world map. Does nothing when the run simply failed to load.
+    public static void CompleteRegion(string currentScene, string nextScene)
+    {
+        if (!string.IsNullOrEmpty(nextScene)) return;
+        NaWaBaStageList list = NaWaBaStageList.Instance;
+        int region = list != null ? list.RegionOf(currentScene) : -1;
+        if (region >= 0) WorldProgress.MarkCleared(region);
+    }
+
+    // Result screen "MAP" button. Falls back to the first stage when the map scene is missing.
+    public static bool LoadMap(IStageFlow leaving, Object context, string fallbackFirstStage)
+    {
+        string target = CanLoad(MapScene) ? MapScene : FirstStage(fallbackFirstStage);
+        return Load(target, leaving, context);
     }
 
     public static bool CanLoad(string sceneName) =>

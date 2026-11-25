@@ -2,8 +2,8 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 
-// One run (한 판) = stage 1 → stage 2 → all clear. Lives across scene loads and is reset
-// whenever stage 1 is entered again (new game). Players are identified by the server's
+// One run (한 판) = the stages of one region picked on the world map, then the result screen.
+// Lives across scene loads; reset when the map starts a region. Players are identified by the server's
 // per-connection ID, never by nickname; the host is "host".
 public static class RunRecord
 {
@@ -28,10 +28,20 @@ public static class RunRecord
     private static float finishedAt = -1f;
 
     public static bool IsFinished => finishedAt >= 0f;
+
+    // For a stage scene started without the world map (e.g. Play in the editor).
+    public static void BeginRunIfIdle()
+    {
+        if (!begun || IsFinished) BeginRun();
+    }
     public static IReadOnlyList<Player> Players => players;
 
+    private static bool begun;
+
+    // The world map calls this when a region is picked.
     public static void BeginRun()
     {
+        begun = true;
         players.Clear();
         stageLines.Clear();
         lastControllerId = "";
@@ -125,6 +135,7 @@ public static class RunRecord
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetStatics()
     {
+        begun = false;
         players.Clear();
         stageLines.Clear();
         lastControllerId = "";

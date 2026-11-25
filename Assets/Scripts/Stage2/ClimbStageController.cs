@@ -348,6 +348,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             return;
         }
 
+        StageSceneLoader.CompleteRegion(gameObject.scene.name, nextScene);
         RunRecord.Finish();
         resultLines = RunRecord.SummaryLines();
         actor.Frozen = true;
@@ -363,8 +364,8 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
 
     private void StartNewGame()
     {
-        // Stage 1 begins a new run (RunRecord resets there).
-        StageSceneLoader.Load(StageSceneLoader.FirstStage(newGameSceneName), this, this);
+        // Back to the world map; the next run begins when a region is picked there.
+        StageSceneLoader.LoadMap(this, this, newGameSceneName);
     }
 
     private void ReturnToLobby()
@@ -403,7 +404,7 @@ public class ClimbStageController : MonoBehaviour, IStageFlow
             y += 30f;
         }
         float buttonWidth = (width - 72f) / 2f;
-        if (GUI.Button(new Rect(panel.x + 24, panel.yMax - 62, buttonWidth, 44), "NEW GAME (1스테이지)", buttonStyle))
+        if (GUI.Button(new Rect(panel.x + 24, panel.yMax - 62, buttonWidth, 44), "MAP (지도)", buttonStyle))
             StartNewGame();
         if (GUI.Button(new Rect(panel.x + 48 + buttonWidth, panel.yMax - 62, buttonWidth, 44), "LOBBY", buttonStyle))
             ReturnToLobby();

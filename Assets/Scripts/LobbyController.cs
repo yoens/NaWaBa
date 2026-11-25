@@ -49,8 +49,9 @@ public class LobbyController : MonoBehaviour
     public void StartStage()
     {
         if (!isActiveAndEnabled || !CanStartStage) return;
-        // A new run always starts at the first stage of the stage list.
-        OpenScene(StageSceneLoader.FirstStage(stageSceneName));
+        // The world map picks the region; without the map scene, start at the first stage.
+        OpenScene(StageSceneLoader.CanLoad(StageSceneLoader.MapScene)
+            ? StageSceneLoader.MapScene : StageSceneLoader.FirstStage(stageSceneName));
     }
 
     public void BackToMainMenu()

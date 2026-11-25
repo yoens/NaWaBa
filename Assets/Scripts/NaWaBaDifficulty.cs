@@ -59,6 +59,20 @@ public class NaWaBaDifficulty : ScriptableObject
     [Tooltip("Trap speed (1 = as built). Respawn after a hit follows the stage 2 Respawn setting.")]
     [SerializeField, Range(0.3f, 3f)] private float trapSpeed = 1f;
 
+    [Header("무덤 1 · 유령 순찰 길")]
+    [Tooltip("Ghost patrol speed (1 = as built). A hit always returns to the last checkpoint.")]
+    [SerializeField, Range(0.3f, 3f)] private float ghostSpeed = 1f;
+
+    [Header("무덤 2 · 지하 갈림길")]
+    [Tooltip("Seconds the left/right sequence is shown before each try (start and every retry).")]
+    [SerializeField, Range(2f, 8f)] private float cryptShowTime = 4f;
+    [Tooltip("Running speed at the first fork in m/s (it rises a little at every fork).")]
+    [SerializeField, Range(4f, 20f)] private float cryptRunSpeed = 10f;
+
+    [Header("무덤 3 · 거울 동굴")]
+    [Tooltip("Mirror rooms to solve (the rooms after these start already solved, doors open).")]
+    [SerializeField, Range(1, 4)] private int mirrorRooms = 3;
+
     public string DisplayName => displayName;
     public string WebLabel => webLabel;
     public int Order => order;
@@ -74,6 +88,10 @@ public class NaWaBaDifficulty : ScriptableObject
     public string CourseName => courseName;
     public float MoverSpeed => moverSpeed;
     public float TrapSpeed => trapSpeed;
+    public float GhostSpeed => ghostSpeed;
+    public float CryptShowTime => cryptShowTime;
+    public float CryptRunSpeed => cryptRunSpeed;
+    public int MirrorRooms => mirrorRooms;
     public int MemoryRounds => memoryRounds;
     public int MemoryStartLength => memoryStartLength;
     public float MemoryShowStep => memoryShowStep;

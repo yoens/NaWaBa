@@ -74,8 +74,17 @@ public class ClimbActorController : MonoBehaviour
     // 원격 조작 준비(영상 연결·카운트다운) 중에는 스테이지가 입력을 잠급니다.
     public bool InputLocked { get; set; }
 
+    // Stages that move the frozen player along a scripted path (the crypt run) set this so the
+    // character animator shows running / falling. Null = animate from the rigidbody as usual.
+    public Vector3? ScriptedVelocity { get; set; }
+    public bool ScriptedGrounded { get; set; } = true;
+
     // 맵 밖으로 떨어져 시작점(또는 체크포인트)으로 돌아갈 때 (기여 기록용).
     public event Action Fell;
+
+    // Jump pressed while the player could act (stages that use jump for something else too,
+    // e.g. turning a mirror, listen here; the jump itself still happens).
+    public event Action JumpPressed;
 
     // True after a checkpoint was reached: falls return there instead of the start.
     public bool HasCheckpoint { get; private set; }
@@ -187,7 +196,10 @@ public class ClimbActorController : MonoBehaviour
         }
 
         if (jumpPressed)
+        {
             jumpRequested = true;
+            JumpPressed?.Invoke();
+        }
     }
 
     private void FixedUpdate()

@@ -277,7 +277,14 @@ public static class KeepBuilder
         box.isTrigger = true;
         box.size = new Vector3(cell - 1f, 2.4f, cell - 1f);
         go.AddComponent<KeepGoal>();
-        Model(props, "chest", p + new Vector3(0f, 0f, 0.8f), 1.3f, true);
+        Transform chest = Model(props, "chest", p + new Vector3(0f, 0f, 0.8f), 1.3f, true);
+        if (chest != null)
+        {
+            // Same "treasure found" effect as the mirror cave (coins burst out when the exit is reached).
+            var fxHost = New(TreasureFxBuilder.HostName, props);
+            fxHost.transform.localPosition = chest.localPosition;
+            TreasureFxBuilder.Add(fxHost, chest, Undoing);
+        }
         if (ClimbCourseBuilder.HasCastleKit)
             ClimbCourseBuilder.PlaceKit(props, "flag-wide", p + new Vector3(-1.4f, 0f, 1.2f), 90f, flagScale);
     }

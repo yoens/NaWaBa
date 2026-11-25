@@ -12,12 +12,37 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0e780570910e4d4ebb29cdeb91bbbbc0, type: 3}
   m_Name: NaWaBaStages
   m_EditorClassIdentifier: Assembly-CSharp::NaWaBaStageList
+  regions:
+  - title: "\uAD6C\uB984\uC131"
+    description: "\uC124\uC0B0\uC744 \uC62C\uB77C \uAD6C\uB984 \uC704\uC758 \uC131\uC744
+      \uC9C0\uB098\uAC04\uB2E4."
+  - title: "\uBB34\uB364"
+    description: "\uC131 \uB4A4\uD3B8, \uC720\uB839\uC774 \uB5A0\uB3C4\uB294 \uBB34\uB364."
+  - title: "\uC232"
+    description: "\uBB34\uB364 \uB108\uBA38, \uAE38\uC744 \uC783\uAE30 \uC26C\uC6B4 \uAE4A\uC740 \uC232\uACFC \uAC15."
+  - title: "\uB3C4\uC2DC"
+    description: "\uC232\uC744 \uBE60\uC838\uB098\uC624\uBA74 \uBCF4\uC774\uB294 \uBC14\uB2F7\uAC00\uC758 \uB3C4\uC2DC."
+  - title: "\uC6B0\uC8FC"
+    description: "\uB3C4\uC2DC\uC758 \uB85C\uCF13\uC744 \uD0C0\uACE0 \uBCC4\uB4E4 \uC0AC\uC774\uB85C."
   stages:
   - sceneName: Stage_Dodge
     title: "1 \xB7 \uB208\uB369\uC774 \uD53C\uD558\uBA70 \uC624\uB974\uAE30"
+    region: 0
   - sceneName: Stage_Climb
     title: "2 \xB7 \uC131\uBB38 \uC55E\uC73C\uB85C"
+    region: 0
   - sceneName: Stage_Gate
     title: "3 \xB7 \uC131\uBB38 \uC5F4\uAE30"
+    region: 0
   - sceneName: Stage_Keep
     title: "4 \xB7 \uC131 \uC548 \uD568\uC815 \uBCF5\uB3C4"
+    region: 0
+  - sceneName: Stage_Grave
+    title: "\uBB34\uB364 1 \xB7 \uC720\uB839 \uC21C\uCC30 \uAE38"
+    region: 1
+  - sceneName: Stage_Crypt
+    title: "\uBB34\uB364 2 \xB7 \uC9C0\uD558 \uAC08\uB9BC\uAE38"
+    region: 1
+  - sceneName: Stage_Mirror
+    title: "\uBB34\uB364 3 \xB7 \uAC70\uC6B8 \uB3D9\uAD74"
+    region: 1

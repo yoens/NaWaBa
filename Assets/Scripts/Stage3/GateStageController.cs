@@ -369,6 +369,7 @@ public class GateStageController : MonoBehaviour, IStageFlow
                 gateway.ReportRunEvent("stage_cleared", $"{player.Name}님이 {stageName} 클리어! 다음 스테이지로 이동합니다");
             return;
         }
+        StageSceneLoader.CompleteRegion(gameObject.scene.name, nextScene);
         FinishRun(player);
     }
 
@@ -450,8 +451,8 @@ public class GateStageController : MonoBehaviour, IStageFlow
             y += 30f;
         }
         float buttonWidth = (width - 72f) / 2f;
-        if (GUI.Button(new Rect(panel.x + 24, panel.yMax - 62, buttonWidth, 44), "NEW GAME (1스테이지)", buttonStyle))
-            StageSceneLoader.Load(StageSceneLoader.FirstStage(newGameSceneName), this, this);
+        if (GUI.Button(new Rect(panel.x + 24, panel.yMax - 62, buttonWidth, 44), "MAP (지도)", buttonStyle))
+            StageSceneLoader.LoadMap(this, this, newGameSceneName);
         if (GUI.Button(new Rect(panel.x + 48 + buttonWidth, panel.yMax - 62, buttonWidth, 44), "LOBBY", buttonStyle))
             StageSceneLoader.Load(lobbySceneName, this, this);
     }

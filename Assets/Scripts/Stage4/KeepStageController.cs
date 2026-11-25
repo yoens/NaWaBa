@@ -27,6 +27,8 @@ public class KeepStageController : MonoBehaviour, IStageFlow
     [SerializeField, Min(0f)] private float hostResumeDelay = 1.5f;
     [SerializeField] private bool playIntro = true;
     [SerializeField, Min(0f)] private float nextStageDelay = 3f;
+    [Tooltip("Seconds of the treasure effect at the exit chest (TreasureChestFx) before the clear.")]
+    [SerializeField, Min(0f)] private float treasureDelay = 2.5f;
 
     [Header("After the run")]
     [SerializeField] private string newGameSceneName = "Stage_Dodge";
@@ -34,7 +36,7 @@ public class KeepStageController : MonoBehaviour, IStageFlow
 
     private const string StageControls = "move,jump,look";
 
-    private enum State { Intro, Playing, Hit, Finished, Advancing }
+    private enum State { Intro, Playing, Hit, Treasure, Finished, Advancing }
 
     private State state = State.Intro;
     private StageHandoff handoff;
@@ -212,7 +214,7 @@ public class KeepStageController : MonoBehaviour, IStageFlow
 
         bool paused = handoff.Paused && !done;
         bool running = !paused && !IntroPlaying && !done;
-        actor.Frozen = paused || IntroPlaying || done || state == State.Hit;
+        actor.Frozen = paused || IntroPlaying || done || state == State.Hit || state == State.Treasure;
 
         // Traps keep moving while the player is knocked down, but stop for handoffs.
         TrapClock.Delta = running ? dt * trapSpeed : 0f;
@@ -238,6 +240,11 @@ public class KeepStageController : MonoBehaviour, IStageFlow
                 timer -= dt;
                 SetStatus("OUCH!");
                 if (timer <= 0f) Respawn();
+                break;
+            case State.Treasure:
+                timer -= dt;
+                SetStatus("TREASURE!");
+                if (timer <= 0f) ClearStage();
                 break;
             case State.Advancing:
                 advanceLeft -= dt;
@@ -306,6 +313,20 @@ public class KeepStageController : MonoBehaviour, IStageFlow
     public void OnReachedGoal()
     {
         if (state != State.Playing || handoff.Paused) return;
+        TreasureChestFx treasure = FindInScene<TreasureChestFx>();
+        if (treasure != null && !treasure.IsOpen && treasureDelay > 0f)
+        {
+            // The treasure moment first (coins, light), then the clear.
+            state = State.Treasure;
+            timer = treasureDelay;
+            treasure.Open();
+            return;
+        }
+        ClearStage();
+    }
+
+    private void ClearStage()
+    {
         RunRecord.Player player = RunRecord.NoteClear(gateway, stageName);
         nextScene = StageSceneLoader.NextStage(gameObject.scene.name, "");
         if (StageSceneLoader.CanLoad(nextScene))
@@ -316,6 +337,7 @@ public class KeepStageController : MonoBehaviour, IStageFlow
                 gateway.ReportRunEvent("stage_cleared", $"{player.Name}님이 {stageName} 클리어! 다음 스테이지로 이동합니다");
             return;
         }
+        StageSceneLoader.CompleteRegion(gameObject.scene.name, nextScene);
         FinishRun(player);
     }
 
@@ -397,8 +419,8 @@ public class KeepStageController : MonoBehaviour, IStageFlow
             y += 30f;
         }
         float buttonWidth = (width - 72f) / 2f;
-        if (GUI.Button(new Rect(panel.x + 24, panel.yMax - 62, buttonWidth, 44), "NEW GAME (1스테이지)", buttonStyle))
-            StageSceneLoader.Load(StageSceneLoader.FirstStage(newGameSceneName), this, this);
+        if (GUI.Button(new Rect(panel.x + 24, panel.yMax - 62, buttonWidth, 44), "MAP (지도)", buttonStyle))
+            StageSceneLoader.LoadMap(this, this, newGameSceneName);
         if (GUI.Button(new Rect(panel.x + 48 + buttonWidth, panel.yMax - 62, buttonWidth, 44), "LOBBY", buttonStyle))
             StageSceneLoader.Load(lobbySceneName, this, this);
     }

@@ -87,8 +87,8 @@ public class SnowClimbStageController : MonoBehaviour, IStageFlow
         slope.Target = actor.transform;
         ApplyDifficulty();
 
-        // Stage 1 is always the start of a new run (한 판).
-        RunRecord.BeginRun();
+        // The world map begins the run; this only covers starting the scene directly.
+        RunRecord.BeginRunIfIdle();
         initialized = true;
     }
 
